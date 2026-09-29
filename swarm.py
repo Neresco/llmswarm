@@ -513,7 +513,14 @@ def set_serve_reasoning(value):
 
 
 def set_request_reasoning(value):
-    _reasoning_ctx["request"] = value if value in ("on", "off") else None
+    # pi sends reasoning_effort (minimal/low/medium/high) or reasoning on/off;
+    # any effort level means thinking is wanted -> force on, never drop to None.
+    if value in ("off", "none"):
+        _reasoning_ctx["request"] = "off"
+    elif value in ("on", "minimal", "low", "medium", "high"):
+        _reasoning_ctx["request"] = "on"
+    else:
+        _reasoning_ctx["request"] = None
 
 
 def reasoning_fields(member):
@@ -1218,34 +1225,12 @@ def serialize_toml(cfg, members_rows):
         lines.append("")
         lines.append("[[member]]")
         lines.append("name = " + toml_str(m["name"]))
-        if m.get("model"):
-            lines.append("model = " + toml_str(m["model"]))
-        if m.get("url"):
-            lines.append("url = " + toml_str(m["url"]))
-        if m.get("host"):
-            lines.append("host = " + toml_str(m["host"]))
-        lines.append("port = %d" % int(m["port"]))
-        lines.append("ctx = %d" % int(m.get("ctx", 8192)))
+        lines.append("url = " + toml_str(m.get("url", "")))
         if m.get("temperature") is not None:
             lines.append("temperature = " + str(float(m["temperature"])))
-        if m.get("engine", "llama.cpp") != "llama.cpp":
-            lines.append("engine = " + toml_str(m["engine"]))
-        if m.get("reasoning", "auto") != "auto":
-            lines.append("reasoning = " + toml_str(m["reasoning"]))
-        if m.get("reasoning_style", "chat_template_kwargs") != "chat_template_kwargs":
-            lines.append("reasoning_style = " + toml_str(m["reasoning_style"]))
-        if m.get("device"):
-            lines.append("device = " + toml_str(m["device"]))
-        if m.get("rpc"):
-            lines.append("rpc = " + toml_str(m["rpc"]))
-        lines.append("roles = " + json.dumps(m.get("roles", ["any"])))
-        if m.get("flags"):
-            lines.append("flags = " + json.dumps(m["flags"]))
-        if m.get("env"):
-            inline = ", ".join("%s = %s" % (k, toml_str(str(v))) for k, v in m["env"].items())
-            lines.append("env = { " + inline + " }")
-        if not m.get("enabled", True):
-            lines.append("enabled = false")
+        lines.append("enabled = " + ("true" if m.get("enabled", True) else "false"))
+        lines.append("reasoning = " + toml_str(m.get("reasoning", "auto")))
+        lines.append("reasoning_style = " + toml_str(m.get("reasoning_style", "chat_template_kwargs")))
     return "\n".join(lines) + "\n"
 
 
@@ -1273,13 +1258,8 @@ def norm_members(rows):
         if isinstance(en, str):
             en = en.strip().lower() not in ("0", "false", "no", "off")
         out.append({
-            "name": m["name"], "model": m.get("model", ""),
-            "url": m.get("url", ""), "host": m.get("host", ""),
-            "port": int(m["port"]), "ctx": int(m.get("ctx", 8192)),
+            "name": m["name"], "url": m.get("url", ""),
             "temperature": temperature,
-            "engine": m.get("engine", "llama.cpp"),
-            "device": m.get("device", ""), "rpc": m.get("rpc", ""),
-            "roles": roles, "flags": m.get("flags", []), "env": env,
             "enabled": bool(en),
             "reasoning": m.get("reasoning", "auto")
                 if m.get("reasoning") in ("auto", "on", "off") else "auto",
@@ -1296,14 +1276,10 @@ def members_public(fleet):
     for name in fleet.order:
         m = fleet.members[name]
         rows.append({
-            "name": m.name, "model": m.model or "", "url": m.url or "",
-            "host": m.host, "port": m.port, "ctx": m.ctx,
+            "name": m.name, "url": m.url or "",
             "temperature": m.temperature if m.temperature is not None else "",
-            "engine": m.engine,
             "reasoning": getattr(m, "reasoning", "auto"),
             "reasoning_style": getattr(m, "reasoning_style", "chat_template_kwargs"),
-            "device": m.device, "rpc": m.rpc,
-            "roles": sorted(m.roles), "flags": m.flags, "env": m.env,
             "enabled": m.enabled,
         })
     return rows
@@ -1311,10 +1287,10 @@ def members_public(fleet):
 
 UI_HTML = """<!doctype html><html><head><meta charset=utf-8><title>LLMSwarm</title>
 <style>
-body{font-family:system-ui;background:#151515;color:#ddd;max-width:960px;margin:2rem auto;font-size:14px}
-h2{color:#9cf} input,textarea,select{background:#222;color:#ddd;border:1px solid #555;padding:5px;border-radius:3px}
-.mrow{display:grid;grid-template-columns:70px 1fr 95px 44px 44px 44px 34px 82px 95px 110px 100px;gap:5px;margin:4px 0}
-.mhead{display:grid;grid-template-columns:70px 1fr 95px 44px 44px 44px 34px 82px 95px 110px 100px;gap:5px;color:#8aa;font-size:12px}
+body{font-family:system-ui;background:#151515;color:#ddd;max-width:1280px;margin:1.5rem auto;font-size:16px}
+h2{color:#9cf} input,textarea,select{background:#222;color:#ddd;border:1px solid #555;padding:8px 9px;border-radius:3px;font-size:15px}
+.mrow{display:grid;grid-template-columns:180px minmax(260px,1.8fr) 80px 110px 150px 96px;gap:8px;margin:4px 0}
+.mhead{display:grid;grid-template-columns:180px minmax(260px,1.8fr) 80px 110px 150px 96px;gap:8px;color:#8aa;font-size:13px}
 .tog{padding:5px 8px;font-size:12px;border:0;border-radius:3px;cursor:pointer;color:#fff}
 .field{margin:10px 0}.field label{display:block;margin-bottom:3px;color:#aaa}
 textarea{width:100%;box-sizing:border-box}
@@ -1325,7 +1301,7 @@ button{background:#2a6;color:#fff;border:0;padding:8px 18px;border-radius:4px;cu
 <p><small>member changes restart the llama-server processes; serve settings apply live.
 Port/host changes need a full supervisor restart.</small></p>
 <h3>Members</h3>
-<div class=mhead><span>name</span><span>model (path/url if connect-only)</span><span>host (set=remote)</span><span>port</span><span>ctx</span><span>temp</span><span>reasoning</span><span>thinking enabler</span><span>on</span><span>device names</span><span>rpc ip:port,.</span><span>roles</span><span>env</span></div>
+<div class=mhead><span>name</span><span>endpoint URL</span><span>temp</span><span>thinking</span><span>thinking style</span><span>enabled</span></div>
 <div id=members></div>
 <div class=field><label>Serve mode</label>
 <select id=mode><option>ensemble</option><option>swarm</option><option>agent</option></select>
@@ -1356,28 +1332,14 @@ async function loadCfg(){
     const sel=(opts,v)=>{const s=document.createElement('select');
       opts.forEach(o=>{const x=document.createElement('option');x.value=o;x.textContent=o;s.appendChild(x);});
       s.value=v;d.appendChild(s);return s;};
-    const name=inp('name',m.name), model=inp('model path or URL',m.model||m.url||''),
-          host=inp('host',m.host||''), port=inp('port',m.port), ctx=inp('ctx',m.ctx),
+    const name=inp('name',m.name), url=inp('http://host:port',m.url||''),
           temp=inp('temp',m.temperature),
           rsn=sel(['auto','on','off'],m.reasoning||'auto'),
           rstyle=sel(['chat_template_kwargs','enable_thinking','thinking_type','reasoning_effort','none'],
                      m.reasoning_style||'chat_template_kwargs'),
-          device=inp('CPU/ROCM1/RPC0',m.device||''),
-          rpc=inp('192.168.1.16:50052',m.rpc||''),
-          roles=inp('roles csv',m.roles.join(',')),
-          env=inp('ENV=VAL',Object.entries(m.env||{}).map(([k,v])=>k+'='+v).join(','));
-    const tog=document.createElement('button');
-    tog.className='tog';
-    tog.textContent=m.enabled===false?'off':'on';
-    tog.title='toggle enabled (skips fan-out and up() health checks)';
-    tog.style.background=m.enabled===false?'#a44':'#2a6';
-    tog.onclick=()=>toggleMember(m.name, tog);
-    d.appendChild(tog);
-    const flags=document.createElement('input'); flags.type='hidden';
-    flags.value=(m.flags||[]).join(',');
-    const engine=inp(''); engine.type='hidden'; engine.value=m.engine||'llama.cpp';
-    d.appendChild(flags);
-    d._fields={name,model,host,port,ctx,temp,rsn,rstyle,device,rpc,roles,env,flags,engine};
+          enb=sel(['true','false'],m.enabled?'true':'false');
+    enb.dataset.role='toggle';
+    d._fields={name,url,temp,rsn,rstyle,enb};
     mrow.appendChild(d);
   });
   const jSel=document.getElementById('judge');
@@ -1405,33 +1367,13 @@ function updateModeHelp(){
   const v=document.getElementById('mode').value;
   document.getElementById('modehelp').textContent=MODE_HELP[v]||"";
 }
-async function toggleMember(name, btn){
-  const cur=btn.textContent==='on';
-  btn.textContent=cur?'off':'on';
-  btn.style.background=cur?'#a44':'#2a6';
-  const r=await fetch('/api/toggle',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({name,enabled:!cur})});
-  const j=await r.json();
-  if(j.error){btn.textContent=cur?'on':'off';btn.style.background=cur?'#2a6':'#a44';
-    document.getElementById('status').textContent=j.error;}
-}
+
 function collect(){
   const members=[...document.querySelectorAll('#members .mrow')].map(d=>{
     const f=d._fields;
-    const tog=d.querySelector('button.tog');
-    const enabled=!(tog && tog.textContent==='off');
-    const env={};
-    f.env.value.split(',').forEach(p=>{const i=p.indexOf('=');
-      if(i>0) env[p.slice(0,i).trim()]=p.slice(i+1).trim();});
-    const mv=f.model.value.trim();
-    const isUrl=mv.startsWith('http');
-    return {name:f.name.value,model:isUrl?'':mv,url:isUrl?mv:'',
-            host:isUrl?'':f.host.value,
-            port:+f.port.value,ctx:+f.ctx.value,temperature:f.temp.value,
+    return {name:f.name.value.trim(),url:f.url.value.trim(),temperature:f.temp.value,
             reasoning:f.rsn.value,reasoning_style:f.rstyle.value,
-            device:f.device.value.trim(),rpc:f.rpc.value.trim(),
-            engine:f.engine.value,roles:f.roles.value,env:env,
-            flags:f.flags.value?f.flags.value.split(','):[],enabled};
+            enabled:f.enb.value==='false'};
   });
   return {serve:{mode:document.getElementById('mode').value,
                  reasoning:document.getElementById('reasoning').value,
