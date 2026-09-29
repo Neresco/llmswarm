@@ -10,7 +10,7 @@ retention_days = 0.0
 host = "0.0.0.0"
 port = 5100
 mode = "ensemble"
-reasoning = "off"
+reasoning = "on"
 member_timeout = 0.0
 judge = "Hemmingway"
 
@@ -19,8 +19,8 @@ name = "Signal-Qwen3.8"
 url = "http://192.168.100.20:5001"
 temperature = 0.7
 enabled = true
-reasoning = "on"
-reasoning_style = "enable_thinking"
+reasoning = "auto"
+reasoning_style = "chat_template_kwargs"
 
 [[member]]
 name = "Xotron"
