@@ -18,46 +18,46 @@ judge = "Hemmingway"
 name = "Signal-Qwen3.8"
 url = "http://192.168.100.20:5001"
 temperature = 0.7
+enabled = true
 reasoning = "on"
 reasoning_style = "enable_thinking"
-enabled = true
 
 [[member]]
 name = "Xotron"
 url = "http://192.168.1.101:5002"
 temperature = 0.7
+enabled = true
 reasoning = "auto"
 reasoning_style = "chat_template_kwargs"
-enabled = true
 
 [[member]]
 name = "Hemmingway"
 url = "http://192.168.1.101:5001"
 temperature = 0.7
+enabled = true
 reasoning = "auto"
 reasoning_style = "chat_template_kwargs"
-enabled = true
 
 [[member]]
 name = "slot_a"
 url = "http://192.168.100.20:5002"
 temperature = 0.7
+enabled = false
 reasoning = "auto"
 reasoning_style = "chat_template_kwargs"
-enabled = false
 
 [[member]]
 name = "slot_b"
 url = "http://127.0.0.1:5004"
 temperature = 0.2
+enabled = false
 reasoning = "auto"
 reasoning_style = "chat_template_kwargs"
-enabled = false
 
 [[member]]
 name = "slot_c"
 url = "http://127.0.0.1:5005"
 temperature = 0.2
+enabled = false
 reasoning = "auto"
 reasoning_style = "chat_template_kwargs"
-enabled = false
