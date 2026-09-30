@@ -17,6 +17,7 @@ judge = "Hemmingway"
 [horde]
 cluster = "https://stablehorde.net"
 api_key = "1uee7tPB5e0CtOhGRQuBpw"
+name_prefix = "Swarm_Test"
 name = "Swarm_Test/Cyberneurova-3.8_Xortron-V4_Hemmway"
 worker_id = "Mandurin3"
 poll_interval = 3.0
