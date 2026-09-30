@@ -544,7 +544,7 @@ def reasoning_fields(member):
     return {}                                # style "none": do not send anything
 
 
-def chat(fleet, name, messages, temperature=0.7, max_tokens=2048, timeout=600, params=None):
+def chat(fleet, name, messages, temperature=0.7, max_tokens=2048, timeout=6000, params=None):
     m = fleet.members[name]
     member = fleet.members[name]
     body = {
@@ -584,7 +584,7 @@ def chat(fleet, name, messages, temperature=0.7, max_tokens=2048, timeout=600, p
 
 
 def chat_stream(fleet, name, messages, on_delta=None, temperature=0.7,
-                max_tokens=2048, timeout=600, params=None):
+                max_tokens=2048, timeout=6000, params=None):
     """Streaming chat with one member. Calls on_delta(text_piece) for each
     content delta and returns the full text."""
     m = fleet.members[name]
@@ -646,7 +646,7 @@ def chat_stream(fleet, name, messages, on_delta=None, temperature=0.7,
     return text
 
 
-def chat_with_tools(fleet, name, messages, timeout=600, params=None):
+def chat_with_tools(fleet, name, messages, timeout=6000, params=None):
     """Like chat() but preserves tool_calls in the response.
     Returns (text, tool_calls) tuple."""
     m = fleet.members[name]
@@ -1712,7 +1712,7 @@ def make_handler(state):
                     try:
                         final, tool_calls = chat_with_tools(
                             state["fleet"], fast_member, messages,
-                            timeout=600, params=params)
+                            timeout=6000, params=params)
                     except Exception:
                         # one failover to the next healthy member
                         _health_cache[fast_member] = (time.time(), False)
@@ -1721,7 +1721,7 @@ def make_handler(state):
                         fast_member = active[1]
                         final, tool_calls = chat_with_tools(
                             state["fleet"], fast_member, messages,
-                            timeout=600, params=params)
+                            timeout=6000, params=params)
                     member_status = {"participated": [fast_member], "failed": []}
                     resp_msg = {"role": "assistant", "content": final}
                     if tool_calls:
@@ -2129,7 +2129,8 @@ def run_horde(state):
           f"{scfg.get('host','0.0.0.0')}:{scfg.get('port',5100)})", file=sys.stderr)
     headers = {"apikey": api_key,
                "User-Agent": "LLMSwarm/1.0",
-               "Client-Agent": "llmswarm:1.0"}
+               "Client-Agent": "llmswarm:1.0",
+               "Content-Type": "application/json"}
 
     def api(method, path, body=None):
         req = urllib.request.Request(
@@ -2203,7 +2204,7 @@ def run_horde(state):
                 if mode == "ensemble":
                     final, st, det = run_ensemble_chat(
                         state["fleet"], state["bb"], messages, active, judge, jparams,
-                        scfg.get("judge_prompt", ""), member_timeout=600)
+                        scfg.get("judge_prompt", ""), member_timeout=6000)
                 elif mode == "swarm":
                     final, st, det = run_swarm(state["fleet"], state["bb"], prompt, active, {})
                 elif mode == "solo":
