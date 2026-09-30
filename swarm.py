@@ -2165,7 +2165,7 @@ def run_horde(state):
             continue
         active = [n for n in state["fleet"].order if state["fleet"].members[n].enabled]
         try:
-            pop = api("POST", "/api/v2/generate/text/pop",
+            pop = api("POST", "/v2/generate/text/pop",
                       {"name": name, "worker_id": worker_id, "models": active,
                        "max_length": max_length, "max_context_length": max_context})
         except Exception:
@@ -2205,7 +2205,7 @@ def run_horde(state):
                 print(f"[horde] job {j.get('id')} failed: {e}", file=sys.stderr)
                 continue
             try:
-                sub = api("POST", "/api/v2/generate/text/submit",
+                sub = api("POST", "/v2/generate/text/submit",
                           {"id": j.get("id"), "generation": final,
                            "state": "ok", "genkey": jparams["genkey"],
                            "worker_id": worker_id})

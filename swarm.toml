@@ -15,7 +15,7 @@ member_timeout = 0.0
 judge = "Hemmingway"
 
 [horde]
-cluster = "https://aihorde.net"
+cluster = "https://stablehorde.net/api"
 api_key = "1uee7tPB5e0CtOhGRQuBpw"
 name = "Swarm_Test/Cyberneurova-3.8_Xortron-V4_Hemmingway"
 worker_id = "Mandurin3"
