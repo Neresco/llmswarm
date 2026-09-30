@@ -16,18 +16,19 @@ judge = "Hemmingway"
 
 [horde]
 cluster = "https://aihorde.net"
-api_key = "00000000000000000000"
-name = "Swarm/llmswarm"
+api_key = "1uee7tPB5e0CtOhGRQuBpw"
+name = "Swarm_Test/Cyberneurova-3.8_Xortron-V4_Hemmingway"
+worker_id = "Mandurin3"
 poll_interval = 3.0
 max_length = 1024
-max_context_length = 8192
+max_context_length = 20480
 quiet = true
 
 [[member]]
-name = "Signal-Qwen3.8"
+name = "Cyberneurova-3.8"
 url = "http://192.168.100.20:5001"
 temperature = 0.7
-enabled = false
+enabled = true
 reasoning = "auto"
 reasoning_style = "chat_template_kwargs"
 

@@ -1227,8 +1227,8 @@ def serialize_toml(cfg, members_rows):
     if hcfg:
         lines.append("")
         lines.append("[horde]")
-        for k in ("cluster", "api_key", "name", "poll_interval", "max_length",
-                  "max_context_length"):
+        for k in ("cluster", "api_key", "name", "worker_id", "poll_interval",
+                  "max_length", "max_context_length"):
             if hcfg.get(k) is not None:
                 v = hcfg[k]
                 lines.append(f"{k} = " + (toml_str(v) if isinstance(v, str) else str(v)))
@@ -2099,8 +2099,9 @@ def run_horde(state):
     scfg = cfg.get("serve", {})
     hcfg = cfg.get("horde", {})
     cluster = hcfg.get("cluster", "http://localhost:5001").rstrip("/")
-    api_key = hcfg.get("api_key", "00000000000000000000")
-    name = hcfg.get("name", "Swarm/llmswarm")
+    api_key = hcfg.get("api_key", "1uee7tPB5e0CtOhGRQuBpw")
+    name = hcfg.get("name", "Swarm_Test/Cyberneurova-3.8_Xortron-V4_Hemmway")
+    worker_id = hcfg.get("worker_id", "Mandurin3")
     poll_seconds = float(hcfg.get("poll_interval", 3))
     max_length = int(hcfg.get("max_length", 1024))
     max_context = int(hcfg.get("max_context_length", 8192))
@@ -2165,7 +2166,7 @@ def run_horde(state):
         active = [n for n in state["fleet"].order if state["fleet"].members[n].enabled]
         try:
             pop = api("POST", "/api/v2/generate/text/pop",
-                      {"name": name, "models": active,
+                      {"name": name, "worker_id": worker_id, "models": active,
                        "max_length": max_length, "max_context_length": max_context})
         except Exception:
             punishcounter += 1
@@ -2206,7 +2207,8 @@ def run_horde(state):
             try:
                 sub = api("POST", "/api/v2/generate/text/submit",
                           {"id": j.get("id"), "generation": final,
-                           "state": "ok", "genkey": jparams["genkey"]})
+                           "state": "ok", "genkey": jparams["genkey"],
+                           "worker_id": worker_id})
             except Exception as e:
                 punishcounter += 1
                 print(f"[horde] submit failed: {e}", file=sys.stderr)
