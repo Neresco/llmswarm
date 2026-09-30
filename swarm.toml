@@ -15,7 +15,7 @@ member_timeout = 0.0
 judge = "Hemmingway"
 
 [horde]
-cluster = "https://stablehorde.net/api"
+cluster = "https://stablehorde.net"
 api_key = "1uee7tPB5e0CtOhGRQuBpw"
 name = "Swarm_Test/Cyberneurova-3.8_Xortron-V4_Hemmingway"
 worker_id = "Mandurin3"
@@ -23,7 +23,7 @@ poll_interval = 3.0
 max_length = 1024
 max_context_length = 20480
 quiet = true
-pop_models = "named"   # "named" = send model names to master; "empty" = accept any job (no models filter)
+pop_models = "empty"   # "named" = send model names to master; "empty" = accept any job (no models filter)
 
 [[member]]
 name = "Cyberneurova-3.8"

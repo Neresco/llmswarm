@@ -2166,18 +2166,25 @@ def run_horde(state):
             continue
         active = [n for n in state["fleet"].order if state["fleet"].members[n].enabled]
         try:
-            pop = api("POST", "/v2/generate/text/pop",
-                      {"name": name, "worker_id": worker_id, "models": active if pop_models == "named" else [],
-                       "max_length": max_length, "max_context_length": max_context})
+            pop = api("POST", "/api/v2/generate/text/pop", {
+                "name": name,
+                "models": active if pop_models == "named" else [],
+                "max_length": max_length,
+                "max_context_length": max_context,
+                "softprompts": [],
+                "bridge_agent": "llmswarm:1.0:local"})
         except Exception:
             punishcounter += 1
             print("[horde] pop failed; waiting 10s", file=sys.stderr)
             time.sleep(10)
             continue
-        if not pop or not pop.get("id"):
+        # master returns a LIST of job objects (or empty list); never a bare dict here
+        if isinstance(pop, dict):
+            pop = [pop]
+        jobs = [j for j in pop if isinstance(j, dict) and (j.get("payload") or j.get("prompt"))]
+        if not jobs:
             time.sleep(1)
             continue
-        jobs = pop if isinstance(pop, list) else [pop]
         for j in jobs:
             payload = j["payload"] if isinstance(j.get("payload"), dict) else j
             prompt = payload.get("prompt") or j.get("prompt", "")
@@ -2206,10 +2213,10 @@ def run_horde(state):
                 print(f"[horde] job {j.get('id')} failed: {e}", file=sys.stderr)
                 continue
             try:
-                sub = api("POST", "/v2/generate/text/submit",
+                sub = api("POST", "/api/v2/generate/text/submit",
                           {"id": j.get("id"), "generation": final,
-                           "state": "ok", "genkey": jparams["genkey"],
-                           "worker_id": worker_id})
+                           "state": "ok", "seed": -1,
+                           "worker_id": worker_id, "genkey": jparams["genkey"]})
             except Exception as e:
                 punishcounter += 1
                 print(f"[horde] submit failed: {e}", file=sys.stderr)
