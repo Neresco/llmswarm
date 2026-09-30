@@ -2156,6 +2156,7 @@ def run_horde(state):
 
     state["horde_stats"] = {"jobs": 0, "kudos_earned": 0.0, "kudos_paid": 0.0,
                             "tokens_in": 0, "tokens_out": 0, "started": time.time()}
+    raw_rr = 0  # round-robin index so every enabled member serves horde jobs
     server = _make_server(state)[0]
 
     def _stop(signum, frame):
@@ -2241,8 +2242,9 @@ def run_horde(state):
         if not prompt:
             punishcounter += 1
             continue
-        raw_member = judge if judge in state["fleet"].members and \
-            state["fleet"].members[judge].enabled else active[0]
+        # rotate through all enabled members so every enabled model actually serves jobs
+        raw_member = active[raw_rr % len(active)]
+        raw_rr += 1
         max_length = int(payload.get("max_length", max_length))
         min_p = payload.get("min_p")
         temp = payload.get("temperature", 1.0)
