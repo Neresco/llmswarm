@@ -23,7 +23,7 @@ poll_interval = 3.0
 max_length = 1024
 max_context_length = 20480
 quiet = true
-pop_models = "empty"   # "named" = send model names to master; "empty" = accept any job (no models filter)
+pop_models = "named"   # "named" = send model names to master; "empty" = accept any job (no models filter)
 
 [[member]]
 name = "Cyberneurova-3.8"
