@@ -1227,7 +1227,7 @@ def serialize_toml(cfg, members_rows):
     if hcfg:
         lines.append("")
         lines.append("[horde]")
-        for k in ("cluster", "api_key", "name", "worker_id", "poll_interval",
+        for k in ("cluster", "api_key", "name_prefix", "worker_id", "poll_interval",
                   "max_length", "max_context_length"):
             if hcfg.get(k) is not None:
                 v = hcfg[k]
@@ -2100,10 +2100,11 @@ def run_horde(state):
     hcfg = cfg.get("horde", {})
     cluster = hcfg.get("cluster", "http://localhost:5001").rstrip("/")
     api_key = hcfg.get("api_key", "1uee7tPB5e0CtOhGRQuBpw")
-    # The combo is the master's model identifier — a single string that MUST match what
-    # was registered. Keep it in config as the single source of truth; never hardcode a
-    # second copy of the spelling in code (that mismatch caused the drift).
-    name = hcfg.get("name", "Swarm_Test/Cyberneurova-3.8_Xortron-V4_Hemmingway")
+    # Master model identifier is DERIVED from live enabled member names so it can
+    # never drift from a rename. Only the prefix is configured; combo built from members.
+    name_prefix = hcfg.get("name_prefix", "Swarm_Test")
+    name = name_prefix + "/" + "_".join(
+        n for n in state["fleet"].order if state["fleet"].members[n].enabled)
     worker_id = hcfg.get("worker_id", "Mandurin3")
     poll_seconds = float(hcfg.get("poll_interval", 3))
     max_length = int(hcfg.get("max_length", 1024))
