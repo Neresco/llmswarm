@@ -2100,9 +2100,11 @@ def run_horde(state):
     hcfg = cfg.get("horde", {})
     cluster = hcfg.get("cluster", "http://localhost:5001").rstrip("/")
     api_key = hcfg.get("api_key", "1uee7tPB5e0CtOhGRQuBpw")
-    # The combo is the master's registered model identifier — a single string that
-    # MUST match what was registered. Keep it in config as the single source of truth.
-    name = hcfg.get("name", "Swarm_Test/Cyberneurova-3.8_Xortron-V4_Hemmway")
+    # Master model identifier is derived from the enabled member names (rename-safe).
+    # Only the prefix is configured; the combo reflects the live enabled roster.
+    name_prefix = hcfg.get("name_prefix", "Swarm_Test")
+    name = name_prefix + "/" + "_".join(
+        n for n in state["fleet"].order if state["fleet"].members[n].enabled)
     worker_id = hcfg.get("worker_id", "Mandurin3")
     poll_seconds = float(hcfg.get("poll_interval", 3))
     max_length = int(hcfg.get("max_length", 1024))
