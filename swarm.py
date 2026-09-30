@@ -2100,7 +2100,10 @@ def run_horde(state):
     hcfg = cfg.get("horde", {})
     cluster = hcfg.get("cluster", "http://localhost:5001").rstrip("/")
     api_key = hcfg.get("api_key", "1uee7tPB5e0CtOhGRQuBpw")
-    name = hcfg.get("name", "Swarm_Test/Cyberneurova-3.8_Xortron-V4_Hemmway")
+    # The model name sent to the master is DERIVED from the live enabled member list so it
+    # can never drift from renamed members. Override the prefix via [horde] name_prefix.
+    name = hcfg.get("name_prefix", "Swarm_Test") + "/" + "_".join(
+        n for n in state["fleet"].order if state["fleet"].members[n].enabled)
     worker_id = hcfg.get("worker_id", "Mandurin3")
     poll_seconds = float(hcfg.get("poll_interval", 3))
     max_length = int(hcfg.get("max_length", 1024))
