@@ -2181,20 +2181,20 @@ def run_horde(state):
             print("[horde] pop failed; waiting 10s", file=sys.stderr)
             time.sleep(10)
             continue
-        # master returns a LIST of job objects (or empty list); never a bare dict here
-        if isinstance(pop, dict):
-            pop = [pop]
-        jobs = [j for j in pop if isinstance(j, dict) and (j.get("payload") or j.get("prompt"))]
-        if not jobs:
+        # master returns a single job envelope; id is null/empty when no job is queued.
+        if isinstance(pop, list):
+            pop = pop[0] if pop else {}
+        if not isinstance(pop, dict) or not pop.get("id"):
+            # no job right now — normal idle state, not an error
             time.sleep(1)
             continue
-        for j in jobs:
-            payload = j["payload"] if isinstance(j.get("payload"), dict) else j
-            prompt = payload.get("prompt") or j.get("prompt", "")
-            jparams = payload.get("params", j.get("params", {}))
-            if not prompt:
-                punishcounter += 1
-                continue
+        j = pop
+        payload = j["payload"] if isinstance(j.get("payload"), dict) else {}
+        prompt = payload.get("prompt") or j.get("prompt", "")
+        jparams = payload.get("params", j.get("params", {}))
+        if not prompt:
+            punishcounter += 1
+            continue
             jparams["genkey"] = "HORDEREQ_%d" % random.randint(100, 999)
             jparams.setdefault("quiet", True)
             jparams.setdefault("stream", True)
