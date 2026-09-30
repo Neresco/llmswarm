@@ -2170,8 +2170,8 @@ def run_horde(state):
         active = [n for n in state["fleet"].order if state["fleet"].members[n].enabled]
         try:
             pop = api("POST", "/api/v2/generate/text/pop", {
-                "name": name,
-                "models": active if pop_models == "named" else [],
+                "name": worker_id,
+                "models": [name] if pop_models == "named" else [],
                 "max_length": max_length,
                 "max_context_length": max_context,
                 "softprompts": [],
@@ -2217,9 +2217,7 @@ def run_horde(state):
                 continue
             try:
                 sub = api("POST", "/api/v2/generate/text/submit",
-                          {"id": j.get("id"), "generation": final,
-                           "state": "ok", "seed": -1,
-                           "worker_id": worker_id, "genkey": jparams["genkey"]})
+                          {"id": j.get("id"), "generation": final, "seed": 0})
             except Exception as e:
                 punishcounter += 1
                 print(f"[horde] submit failed: {e}", file=sys.stderr)
