@@ -1227,7 +1227,7 @@ def serialize_toml(cfg, members_rows):
     if hcfg:
         lines.append("")
         lines.append("[horde]")
-        for k in ("cluster", "api_key", "name_prefix", "worker_id", "poll_interval",
+        for k in ("cluster", "api_key", "name", "worker_id", "poll_interval",
                   "max_length", "max_context_length"):
             if hcfg.get(k) is not None:
                 v = hcfg[k]
@@ -2100,12 +2100,10 @@ def run_horde(state):
     hcfg = cfg.get("horde", {})
     cluster = hcfg.get("cluster", "http://localhost:5001").rstrip("/")
     api_key = hcfg.get("api_key", "1uee7tPB5e0CtOhGRQuBpw")
-    # Master model identifier is derived from the enabled member names (rename-safe).
-    # Only the prefix is configured; the combo reflects the live enabled roster.
-    name_prefix = hcfg.get("name_prefix", "Swarm_Test")
-    name = name_prefix + "/" + "_".join(
-        n for n in state["fleet"].order if state["fleet"].members[n].enabled)
-    worker_id = hcfg.get("worker_id", "Mandurin3")
+    # The combo is the master's registered model identifier — a single opaque string the
+    # master keys on. Keep it in config as the single source of truth; do NOT derive it
+    # from member names (that would change the identifier on every rename and re-register).
+    name = hcfg.get("name", "Swarm_Test/Cyberneurova-3.8_Xortron-V4_Hemmway")
     poll_seconds = float(hcfg.get("poll_interval", 3))
     max_length = int(hcfg.get("max_length", 1024))
     max_context = int(hcfg.get("max_context_length", 8192))
