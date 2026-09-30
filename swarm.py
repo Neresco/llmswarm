@@ -583,6 +583,46 @@ def chat(fleet, name, messages, temperature=0.7, max_tokens=2048, timeout=6000, 
     return text
 
 
+def raw_complete(fleet, name, prompt, params=None, max_length=200, temperature=1.0,
+                 min_p=None, timeout=6000):
+    """Raw KoboldCpp-style generation via /v1/completions.
+    Horde text jobs arrive in koboldcpp raw-prompt format (<|turn> markers) with
+    koboldcpp sampling params; the native raw endpoint handles them, but chat
+    completions do not (reasoning models bury the answer in reasoning_content
+    and return empty content)."""
+    m = fleet.members[name]
+    body = {"prompt": prompt, "max_tokens": int(max_length), "temperature": temperature,
+            "stream": False}
+    if min_p is not None:
+        body["min_p"] = min_p
+    if params:
+        for k in ("max_length", "min_p", "temperature", "top_p", "dynatemp_range",
+                  "dynatemp_exponent", "smoothing_factor", "stop", "seed", "tfs"):
+            v = params.get(k)
+            if v is None:
+                continue
+            if k == "max_length":
+                body["max_tokens"] = int(v)
+            elif k == "temperature" and m.temperature is not None:
+                continue  # member's own temp wins
+            else:
+                body[k] = v
+    req = urllib.request.Request(m.base + "/v1/completions",
+                                 data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            out = json.loads(r.read())
+        latency = time.time() - t0
+        log_member_call(name, latency, True)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")[:300]
+        log_member_call(name, time.time() - t0, False)
+        raise RuntimeError(f"member {name} HTTP {e.code}: {detail}") from e
+    return out["choices"][0]["text"]
+
+
 def chat_stream(fleet, name, messages, on_delta=None, temperature=0.7,
                 max_tokens=2048, timeout=6000, params=None):
     """Streaming chat with one member. Calls on_delta(text_piece) for each
@@ -2193,26 +2233,23 @@ def run_horde(state):
         j = pop
         payload = j["payload"] if isinstance(j.get("payload"), dict) else {}
         prompt = payload.get("prompt") or j.get("prompt", "")
-        jparams = payload.get("params", j.get("params", {}))
+        # Horde text jobs are raw koboldcpp-style generation requests: the prompt
+        # carries <|turn> markers and koboldcpp sampling params live directly in the
+        # payload. Feed the raw prompt to a member's /v1/completions endpoint; the chat
+        # ensemble mis-handles turn-marker prompts and reasoning models return empty
+        # content there.
         if not prompt:
             punishcounter += 1
             continue
-        jparams["genkey"] = "HORDEREQ_%d" % random.randint(100, 999)
-        jparams.setdefault("quiet", True)
-        jparams.setdefault("stream", True)
-        messages = payload.get("messages") or [{"role": "user", "content": prompt}]
+        raw_member = judge if judge in state["fleet"].members and \
+            state["fleet"].members[judge].enabled else active[0]
+        max_length = int(payload.get("max_length", max_length))
+        min_p = payload.get("min_p")
+        temp = payload.get("temperature", 1.0)
         try:
-            if mode == "ensemble":
-                final, st, det = run_ensemble_chat(
-                    state["fleet"], state["bb"], messages, active, judge, jparams,
-                    scfg.get("judge_prompt", ""), member_timeout=6000)
-            elif mode == "swarm":
-                final, st, det = run_swarm(state["fleet"], state["bb"], prompt, active, {})
-            elif mode == "solo":
-                final, st, det = run_solo(state["fleet"], state["bb"], prompt, active[0])
-            else:
-                final, st, det = run_agent_swarm(
-                    state["fleet"], state["bb"], prompt, active, judge, messages=messages)
+            final = raw_complete(state["fleet"], raw_member, prompt,
+                                 params=payload, max_length=max_length,
+                                 min_p=min_p, temperature=temp, timeout=6000)
         except Exception as e:
             punishcounter += 1
             print(f"[horde] job {j.get('id')} failed: {e}", file=sys.stderr)
