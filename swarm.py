@@ -2105,6 +2105,7 @@ def run_horde(state):
     name_prefix = hcfg.get("name_prefix", "Swarm_Test")
     name = name_prefix + "/" + "_".join(
         n for n in state["fleet"].order if state["fleet"].members[n].enabled)
+    worker_id = hcfg.get("worker_id", "Mandurin3")
     poll_seconds = float(hcfg.get("poll_interval", 3))
     max_length = int(hcfg.get("max_length", 1024))
     max_context = int(hcfg.get("max_context_length", 8192))
@@ -2177,9 +2178,9 @@ def run_horde(state):
                 "max_context_length": max_context,
                 "softprompts": [],
                 "bridge_agent": "llmswarm:1.0:local"})
-        except Exception:
+        except Exception as e:
             punishcounter += 1
-            print("[horde] pop failed; waiting 10s", file=sys.stderr)
+            print(f"[horde] pop failed: {e}; waiting 10s", file=sys.stderr)
             time.sleep(10)
             continue
         # master returns a single job envelope; id is null/empty when no job is queued.
@@ -2196,51 +2197,62 @@ def run_horde(state):
         if not prompt:
             punishcounter += 1
             continue
-            jparams["genkey"] = "HORDEREQ_%d" % random.randint(100, 999)
-            jparams.setdefault("quiet", True)
-            jparams.setdefault("stream", True)
-            messages = payload.get("messages") or [{"role": "user", "content": prompt}]
+        jparams["genkey"] = "HORDEREQ_%d" % random.randint(100, 999)
+        jparams.setdefault("quiet", True)
+        jparams.setdefault("stream", True)
+        messages = payload.get("messages") or [{"role": "user", "content": prompt}]
+        try:
+            if mode == "ensemble":
+                final, st, det = run_ensemble_chat(
+                    state["fleet"], state["bb"], messages, active, judge, jparams,
+                    scfg.get("judge_prompt", ""), member_timeout=6000)
+            elif mode == "swarm":
+                final, st, det = run_swarm(state["fleet"], state["bb"], prompt, active, {})
+            elif mode == "solo":
+                final, st, det = run_solo(state["fleet"], state["bb"], prompt, active[0])
+            else:
+                final, st, det = run_agent_swarm(
+                    state["fleet"], state["bb"], prompt, active, judge, messages=messages)
+        except Exception as e:
+            punishcounter += 1
+            print(f"[horde] job {j.get('id')} failed: {e}", file=sys.stderr)
+            continue
+        if not quiet:
+            print(f"[horde] job {j.get('id')}: generation len={len(final) if final else 'NONE'}", file=sys.stderr)
+        if not final or not final.strip():
+            # empty reply — report faulted rather than submitting an empty generation (400)
             try:
-                if mode == "ensemble":
-                    final, st, det = run_ensemble_chat(
-                        state["fleet"], state["bb"], messages, active, judge, jparams,
-                        scfg.get("judge_prompt", ""), member_timeout=6000)
-                elif mode == "swarm":
-                    final, st, det = run_swarm(state["fleet"], state["bb"], prompt, active, {})
-                elif mode == "solo":
-                    final, st, det = run_solo(state["fleet"], state["bb"], prompt, active[0])
-                else:
-                    final, st, det = run_agent_swarm(
-                        state["fleet"], state["bb"], prompt, active, judge, messages=messages)
+                api("POST", "/api/v2/generate/text/submit",
+                    {"id": j.get("id"), "generation": "", "state": "faulted", "seed": -1})
             except Exception as e:
                 punishcounter += 1
-                print(f"[horde] job {j.get('id')} failed: {e}", file=sys.stderr)
-                continue
-            try:
-                sub = api("POST", "/api/v2/generate/text/submit",
-                          {"id": j.get("id"), "generation": final, "seed": 0})
-            except Exception as e:
-                punishcounter += 1
-                print(f"[horde] submit failed: {e}", file=sys.stderr)
-                continue
-            reward = float(sub.get("reward", 1.0) or 0)
-            kudos_earned += reward
-            rewardcounter += 1
-            if rewardcounter > 50:
-                rewardcounter = max(0, rewardcounter - 1)
-                if not quiet:
-                    print(f"[horde] {reward:.1f} kudos; total {kudos_earned:.0f} in "
-                          f"{(time.time()-session_start)/3600:.2f}h; jobs {jobs_done}",
-                          file=sys.stderr)
-            jobs_done += 1
-            state["horde_stats"] = {
-                "jobs": jobs_done, "kudos_earned": round(kudos_earned, 1),
-                "kudos_paid": 0.0, "tokens_in": 0, "tokens_out": 0,
-                "started": session_start}
+                print(f"[horde] faulted submit failed: {e}", file=sys.stderr)
+            continue
+        try:
+            sub = api("POST", "/api/v2/generate/text/submit",
+                      {"id": j.get("id"), "generation": final, "seed": 0})
+        except Exception as e:
+            punishcounter += 1
+            print(f"[horde] submit failed: {e}", file=sys.stderr)
+            continue
+        reward = float(sub.get("reward", 1.0) or 0)
+        kudos_earned += reward
+        rewardcounter += 1
+        if rewardcounter > 50:
+            rewardcounter = max(0, rewardcounter - 1)
             if not quiet:
-                print(f"[horde] job {j.get('id')} done (reward {reward:.1f})",
+                print(f"[horde] {reward:.1f} kudos; total {kudos_earned:.0f} in "
+                      f"{(time.time()-session_start)/3600:.2f}h; jobs {jobs_done}",
                       file=sys.stderr)
-            last_local_req = time.time()
+        jobs_done += 1
+        state["horde_stats"] = {
+            "jobs": jobs_done, "kudos_earned": round(kudos_earned, 1),
+            "kudos_paid": 0.0, "tokens_in": 0, "tokens_out": 0,
+            "started": session_start}
+        if not quiet:
+            print(f"[horde] job {j.get('id')} done (reward {reward:.1f})",
+                  file=sys.stderr)
+        last_local_req = time.time()
 
     server.shutdown()
     server.server_close()
