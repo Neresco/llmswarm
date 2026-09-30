@@ -2156,7 +2156,6 @@ def run_horde(state):
 
     state["horde_stats"] = {"jobs": 0, "kudos_earned": 0.0, "kudos_paid": 0.0,
                             "tokens_in": 0, "tokens_out": 0, "started": time.time()}
-    raw_rr = 0  # round-robin index so every enabled member serves horde jobs
     server = _make_server(state)[0]
 
     def _stop(signum, frame):
@@ -2236,26 +2235,52 @@ def run_horde(state):
         prompt = payload.get("prompt") or j.get("prompt", "")
         # Horde text jobs are raw koboldcpp-style generation requests: the prompt
         # carries <|turn> markers and koboldcpp sampling params live directly in the
-        # payload. Feed the raw prompt to a member's /v1/completions endpoint; the chat
-        # ensemble mis-handles turn-marker prompts and reasoning models return empty
-        # content there.
+        # payload. Every enabled member generates in parallel (raw /v1/completions,
+        # which reasoning models handle correctly), then the judge merges all replies
+        # into the single final answer — same ensemble shape as the chat path.
         if not prompt:
             punishcounter += 1
             continue
-        # rotate through all enabled members so every enabled model actually serves jobs
-        raw_member = active[raw_rr % len(active)]
-        raw_rr += 1
         max_length = int(payload.get("max_length", max_length))
         min_p = payload.get("min_p")
         temp = payload.get("temperature", 1.0)
+        candidates = {}
+        def raw_one(nm):
+            try:
+                ans = raw_complete(state["fleet"], nm, prompt, params=payload,
+                                   max_length=max_length, min_p=min_p,
+                                   temperature=temp, timeout=6000)
+                return nm, (ans or "").strip() or None
+            except Exception:
+                return nm, None
+        with ThreadPoolExecutor(max_workers=len(active)) as ex:
+            for nm, ans in ex.map(raw_one, active):
+                if ans:
+                    candidates[nm] = ans
+        if not candidates:
+            punishcounter += 1
+            continue
+        merged = "\n\n".join(f"[{nm}] {ans[:1500]}" for nm, ans in candidates.items())
+        judge_member = judge if judge in state["fleet"].members and \
+            state["fleet"].members[judge].enabled else active[0]
+        judge_msgs = [
+            {"role": "system",
+             "content": "Several models answered the same request. Produce one single "
+                        "final answer that best resolves the request. Do not mention the "
+                        "models or list alternatives; just give the answer."},
+            {"role": "user",
+             "content": "Original request:\n" + prompt +
+                        "\n\nCandidate answers:\n" + merged},
+        ]
         try:
-            final = raw_complete(state["fleet"], raw_member, prompt,
-                                 params=payload, max_length=max_length,
-                                 min_p=min_p, temperature=temp, timeout=6000)
+            final = chat(state["fleet"], judge_member, judge_msgs, temperature=0.4)
         except Exception as e:
             punishcounter += 1
-            print(f"[horde] job {j.get('id')} failed: {e}", file=sys.stderr)
+            print(f"[horde] job {j.get('id')} judge failed: {e}", file=sys.stderr)
             continue
+        if not final or not final.strip():
+            # fall back to the best raw candidate rather than submit empty
+            final = next(iter(candidates.values()))
         if not quiet:
             print(f"[horde] job {j.get('id')}: generation len={len(final) if final else 'NONE'}", file=sys.stderr)
         if not final or not final.strip():
