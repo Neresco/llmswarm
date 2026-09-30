@@ -2260,7 +2260,7 @@ def run_horde(state):
         if not candidates:
             punishcounter += 1
             continue
-        merged = "\n\n".join(f"[{nm}] {ans[:1500]}" for nm, ans in candidates.items())
+        merged = "\n\n".join(f"[{nm}] {ans[:600]}" for nm, ans in candidates.items())
         judge_member = judge if judge in state["fleet"].members and \
             state["fleet"].members[judge].enabled else active[0]
         judge_msgs = [
@@ -2297,7 +2297,13 @@ def run_horde(state):
                       {"id": j.get("id"), "generation": final, "seed": 0})
         except Exception as e:
             punishcounter += 1
-            print(f"[horde] submit failed: {e}", file=sys.stderr)
+            body = ""
+            if getattr(e, "read", None):
+                try:
+                    body = e.read().decode(errors="replace")[:200]
+                except Exception:
+                    pass
+            print(f"[horde] submit failed: {e} {body}", file=sys.stderr)
             continue
         reward = float(sub.get("reward", 1.0) or 0)
         kudos_earned += reward
