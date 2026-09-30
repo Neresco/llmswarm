@@ -13,6 +13,7 @@ agent can query for relevant prior findings.
 import argparse
 import json
 import os
+import random
 import signal
 import socket
 import sqlite3
@@ -405,7 +406,8 @@ def _alive(pid):
 
 
 PASS_PARAMS = ("temperature", "max_tokens", "top_p", "presence_penalty",
-               "frequency_penalty", "stop", "seed", "tools", "tool_choice")
+               "frequency_penalty", "stop", "seed", "tools", "tool_choice",
+               "genkey")
 
 
 def completion_messages(req):
@@ -1210,6 +1212,7 @@ def serialize_toml(cfg, members_rows):
     lines.append('retention_days = %s' % float(bbcfg.get("retention_days", 0) or 0))
     lines.append("")
     scfg = cfg.get("serve", {})
+    hcfg = cfg.get("horde", {})
     lines.append("[serve]")
     lines.append("host = " + toml_str(scfg.get("host", "0.0.0.0")))
     lines.append("port = %d" % scfg.get("port", 5100))
@@ -1221,6 +1224,16 @@ def serialize_toml(cfg, members_rows):
         lines.append("judge = " + toml_str(scfg["judge"]))
     if scfg.get("judge_prompt"):
         lines.append("judge_prompt = " + toml_str(scfg["judge_prompt"]))
+    if hcfg:
+        lines.append("")
+        lines.append("[horde]")
+        for k in ("cluster", "api_key", "name", "poll_interval", "max_length",
+                  "max_context_length"):
+            if hcfg.get(k) is not None:
+                v = hcfg[k]
+                lines.append(f"{k} = " + (toml_str(v) if isinstance(v, str) else str(v)))
+        if hcfg.get("quiet") is not None:
+            lines.append("quiet = " + ("true" if hcfg.get("quiet") else "false"))
     for m in members_rows:
         lines.append("")
         lines.append("[[member]]")
@@ -1422,16 +1435,15 @@ loadCfg();
 </script></body></html>"""
 
 
-def run_serve(state):
+def make_handler(state):
+    """HTTP handler class factory; the server itself is run by run_serve/run_horde."""
     import http.server
 
-    cfg = state["cfg"]
-    scfg = cfg.get("serve", {})
-    host = scfg.get("host", "0.0.0.0")
-    port = scfg.get("port", 5100)
+    scfg = state["cfg"].get("serve", {})
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        # bound in run_serve/run_horde; serve is passive here
 
         def log_message(self, fmt, *a):
             sys.stderr.write("[serve] %s %s\n" % (self.address_string(), fmt % a))
@@ -1581,6 +1593,12 @@ def run_serve(state):
                     {"id": "swarm", "object": "model", "owned_by": "llmswarm"}]})
             elif self.path == "/api/last_details":
                 self._send(200, json.dumps(state.get("last_details", {})).encode())
+            elif self.path in ("/api/stats", "/api/horde", "/api/horde_stats"):
+                stats = state.get("horde_stats", {})
+                if stats:
+                    self._send(200, json.dumps(stats).encode())
+                else:
+                    self._send(200, {"error": "serve mode: no horde stats"})
             elif self.path == "/api/config":
                 self._send(200, json.dumps({
                     "serve": state["cfg"]["serve"],
@@ -2040,20 +2058,30 @@ def run_serve(state):
             except Exception as e:
                 self._send(500, {"error": "save failed: %s" % e})
 
+    return Handler
+
+
+def _make_server(state):
+    import http.server
+    scfg = state["cfg"].get("serve", {})
+    host = scfg.get("host", "0.0.0.0")
+    port = scfg.get("port", 5100)
     print(f"swarm serving on http://{host}:{port}  (ui at /ui, config at /api/config)")
-    
-    # Graceful shutdown on SIGTERM
-    server = http.server.ThreadingHTTPServer((host, port), Handler)
-    
-    def shutdown_handler(signum, frame):
+    server = http.server.ThreadingHTTPServer((host, port), make_handler(state))
+    server.daemon_threads = True
+    return server, (host, port)
+
+
+def run_serve(state):
+    """Passive OpenAI-compatible API mode: endpoints are the interface."""
+    server, _ = _make_server(state)
+
+    def shutdown(signum, frame):
         print(f"\n[serve] Received signal {signum}, shutting down gracefully...", file=sys.stderr)
-        print(f"[serve] Finishing in-flight requests...", file=sys.stderr)
         server.shutdown()
-        print(f"[serve] Shutdown complete.", file=sys.stderr)
-    
-    signal.signal(signal.SIGTERM, shutdown_handler)
-    signal.signal(signal.SIGINT, shutdown_handler)
-    
+        print("[serve] Shutdown complete.", file=sys.stderr)
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
     try:
         server.serve_forever()
     except Exception as e:
@@ -2062,9 +2090,154 @@ def run_serve(state):
         server.server_close()
 
 
+def run_horde(state):
+    """Worker mode: poll an external horde cluster, process jobs locally, submit back.
+    The endpoints stay; requests are marked HORDEREQ_<random> to distinguish them."""
+    import http.server
+    import threading
+    cfg = state["cfg"]
+    scfg = cfg.get("serve", {})
+    hcfg = cfg.get("horde", {})
+    cluster = hcfg.get("cluster", "http://localhost:5001").rstrip("/")
+    api_key = hcfg.get("api_key", "00000000000000000000")
+    name = hcfg.get("name", "Swarm/llmswarm")
+    poll_seconds = float(hcfg.get("poll_interval", 3))
+    max_length = int(hcfg.get("max_length", 1024))
+    max_context = int(hcfg.get("max_context_length", 8192))
+    quiet = hcfg.get("quiet", True)
+    mode = scfg.get("mode", "ensemble")
+    judge = scfg.get("judge")
+
+    state["horde_stats"] = {"jobs": 0, "kudos_earned": 0.0, "kudos_paid": 0.0,
+                            "tokens_in": 0, "tokens_out": 0, "started": time.time()}
+    server = _make_server(state)[0]
+
+    def _stop(signum, frame):
+        print("\n[horde] shutdown", file=sys.stderr)
+        server.shutdown()
+        server.server_close()
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"[horde] worker '{name}' polling {cluster} (local API "
+          f"{scfg.get('host','0.0.0.0')}:{scfg.get('port',5100)})", file=sys.stderr)
+    headers = {"apikey": api_key,
+               "User-Agent": "LLMSwarm/1.0",
+               "Client-Agent": "llmswarm:1.0"}
+
+    def api(method, path, body=None):
+        req = urllib.request.Request(
+            cluster + path,
+            data=json.dumps(body).encode() if body else None,
+            headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=90) as r:
+            return json.loads(r.read())
+
+    for _ in range(10):
+        try:
+            api("GET", "/api/v1/info/version")
+            break
+        except Exception:
+            time.sleep(2)
+
+    exitcounter = punishcounter = rewardcounter = 0
+    session_start = time.time()
+    kudos_earned = 0.0
+    jobs_done = 0
+    last_local_req = time.time()
+    while exitcounter < 10:
+        time.sleep(poll_seconds)
+        if punishcounter >= 5:
+            punishcounter = 0
+            exitcounter += 1
+            if exitcounter >= 10:
+                print("[horde] exit limit reached (too many errors)", file=sys.stderr)
+                break
+            penalty = 2 ** exitcounter
+            print(f"[horde] paused {penalty} min - too many errors", file=sys.stderr)
+            time.sleep(60 * penalty)
+            print("[horde] resumed", file=sys.stderr)
+            continue
+        if time.time() - last_local_req > 20:
+            time.sleep(1)
+            continue
+        active = [n for n in state["fleet"].order if state["fleet"].members[n].enabled]
+        try:
+            pop = api("POST", "/api/v2/generate/text/pop",
+                      {"name": name, "models": active,
+                       "max_length": max_length, "max_context_length": max_context})
+        except Exception:
+            punishcounter += 1
+            print("[horde] pop failed; waiting 10s", file=sys.stderr)
+            time.sleep(10)
+            continue
+        if not pop or not pop.get("id"):
+            time.sleep(1)
+            continue
+        jobs = pop if isinstance(pop, list) else [pop]
+        for j in jobs:
+            payload = j["payload"] if isinstance(j.get("payload"), dict) else j
+            prompt = payload.get("prompt") or j.get("prompt", "")
+            jparams = payload.get("params", j.get("params", {}))
+            if not prompt:
+                punishcounter += 1
+                continue
+            jparams["genkey"] = "HORDEREQ_%d" % random.randint(100, 999)
+            jparams.setdefault("quiet", True)
+            jparams.setdefault("stream", True)
+            messages = payload.get("messages") or [{"role": "user", "content": prompt}]
+            try:
+                if mode == "ensemble":
+                    final, st, det = run_ensemble_chat(
+                        state["fleet"], state["bb"], messages, active, judge, jparams,
+                        scfg.get("judge_prompt", ""), member_timeout=600)
+                elif mode == "swarm":
+                    final, st, det = run_swarm(state["fleet"], state["bb"], prompt, active, {})
+                elif mode == "solo":
+                    final, st, det = run_solo(state["fleet"], state["bb"], prompt, active[0])
+                else:
+                    final, st, det = run_agent_swarm(
+                        state["fleet"], state["bb"], prompt, active, judge, messages=messages)
+            except Exception as e:
+                punishcounter += 1
+                print(f"[horde] job {j.get('id')} failed: {e}", file=sys.stderr)
+                continue
+            try:
+                sub = api("POST", "/api/v2/generate/text/submit",
+                          {"id": j.get("id"), "generation": final,
+                           "state": "ok", "genkey": jparams["genkey"]})
+            except Exception as e:
+                punishcounter += 1
+                print(f"[horde] submit failed: {e}", file=sys.stderr)
+                continue
+            reward = float(sub.get("reward", 1.0) or 0)
+            kudos_earned += reward
+            rewardcounter += 1
+            if rewardcounter > 50:
+                rewardcounter = max(0, rewardcounter - 1)
+                if not quiet:
+                    print(f"[horde] {reward:.1f} kudos; total {kudos_earned:.0f} in "
+                          f"{(time.time()-session_start)/3600:.2f}h; jobs {jobs_done}",
+                          file=sys.stderr)
+            jobs_done += 1
+            state["horde_stats"] = {
+                "jobs": jobs_done, "kudos_earned": round(kudos_earned, 1),
+                "kudos_paid": 0.0, "tokens_in": 0, "tokens_out": 0,
+                "started": session_start}
+            if not quiet:
+                print(f"[horde] job {j.get('id')} done (reward {reward:.1f})",
+                      file=sys.stderr)
+            last_local_req = time.time()
+
+    server.shutdown()
+    server.server_close()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("command", choices=["up", "down", "status", "ask", "board", "serve"])
+    ap.add_argument("command", choices=["up", "down", "status", "ask", "board",
+                                        "serve", "horde"])
     ap.add_argument("--config", default=str(HERE / "swarm.toml"))
     ap.add_argument("--mode", default="swarm", choices=["swarm", "ensemble", "solo", "agent"])
     ap.add_argument("--member", default=None, help="for solo mode")
@@ -2086,21 +2259,17 @@ def main():
     if args.command == "status":
         fleet.status()
         return
-    if args.command == "serve":
-        fleet.up()
-        bb = Blackboard(str(RUNTIME / "blackboard.sqlite"),
-                        cfg.get("blackboard", {}))
+    if args.command in ("serve", "horde"):
+        bb = Blackboard(str(RUNTIME / "blackboard.sqlite"), cfg.get("blackboard", {}))
         dropped = bb.prune()
         if dropped:
             print(f"[blackboard] pruned {dropped} entries "
                   f"(retention {bb.retention_days:g} days)")
-        state = {
-            "cfg": cfg,
-            "fleet": fleet,
-            "bb": bb,
-            "toml_path": args.config,
-        }
-        run_serve(state)
+        state = {"cfg": cfg, "fleet": fleet, "bb": bb, "toml_path": args.config}
+        if args.command == "serve":
+            run_serve(state)
+        else:
+            run_horde(state)
         return
     if args.command == "board":
         bb = Blackboard(args.bb)

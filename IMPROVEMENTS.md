@@ -341,3 +341,20 @@ An enabled member whose endpoint silently swallows packets (dropped SYNs) used t
 - Graceful shutdown (SIGTERM)
 - Test suite (tests/test_swarm.py)
 - Configuration validation
+
+## Serve vs Horde split
+
+Two runtime modes now:
+
+- `serve` — the swarm IS a passive OpenAI-compatible API server. The endpoints
+  ARE the interface; external callers (pi sub-agent, SillyTavern) drive it via
+  HTTP POSTs. No polling loop.
+- `horde` — additive worker mode: a worker loop polls the external cluster
+  (URL from `[horde] cluster`, e.g. https://aihorde.net) for jobs, runs the
+  local pipeline, and submits results back. Local endpoints stay live; horde
+  requests are marked `HORDEREQ_<random>` genkey. Stats visible via
+  `/api/stats` + `/api/horde_stats`; `quiet` suppresses generated text.
+
+`[horde]` config section: `cluster`, `api_key`, `name`, `poll_interval`,
+`max_length`, `max_context_length`, `quiet`. `genkey` added to PASS_PARAMS.
+`set_and_start_horde.sh` launches `swarm.py horde`.
