@@ -28,7 +28,7 @@ quiet = true
 name = "Cyberneurova-3.8"
 url = "http://192.168.100.20:5001"
 temperature = 0.7
-enabled = false
+enabled = true
 reasoning = "auto"
 reasoning_style = "chat_template_kwargs"
 

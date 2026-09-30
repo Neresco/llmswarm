@@ -2100,11 +2100,11 @@ def run_horde(state):
     hcfg = cfg.get("horde", {})
     cluster = hcfg.get("cluster", "http://localhost:5001").rstrip("/")
     api_key = hcfg.get("api_key", "1uee7tPB5e0CtOhGRQuBpw")
-    # Master model identifier is DERIVED from live enabled member names so it can
-    # never drift from a rename. Only the prefix is configured; combo built from members.
+    # Master model identifier is DERIVED from the full live member roster so it can never
+    # drift from a rename. All members (incl. slots) join into the combo; the prefix is
+    # the only configured part.
     name_prefix = hcfg.get("name_prefix", "Swarm_Test")
-    name = name_prefix + "/" + "_".join(
-        n for n in state["fleet"].order if state["fleet"].members[n].enabled)
+    name = name_prefix + "/" + "_".join(state["fleet"].order)
     worker_id = hcfg.get("worker_id", "Mandurin3")
     poll_seconds = float(hcfg.get("poll_interval", 3))
     max_length = int(hcfg.get("max_length", 1024))
