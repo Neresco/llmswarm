@@ -2106,6 +2106,7 @@ def run_horde(state):
     max_length = int(hcfg.get("max_length", 1024))
     max_context = int(hcfg.get("max_context_length", 8192))
     quiet = hcfg.get("quiet", True)
+    pop_models = hcfg.get("pop_models", "named")
     mode = scfg.get("mode", "ensemble")
     judge = scfg.get("judge")
 
@@ -2166,7 +2167,7 @@ def run_horde(state):
         active = [n for n in state["fleet"].order if state["fleet"].members[n].enabled]
         try:
             pop = api("POST", "/v2/generate/text/pop",
-                      {"name": name, "worker_id": worker_id, "models": active,
+                      {"name": name, "worker_id": worker_id, "models": active if pop_models == "named" else [],
                        "max_length": max_length, "max_context_length": max_context})
         except Exception:
             punishcounter += 1
