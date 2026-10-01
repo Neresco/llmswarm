@@ -17,8 +17,13 @@ python3 swarm.py up                  # boot all members defined in swarm.toml
 python3 swarm.py status
 python3 swarm.py ask --mode swarm --problem "your question"
 python3 swarm.py board               # inspect blackboard entries
+python3 swarm.py serve               # OpenAI-compatible facade for chat UIs
+python3 swarm.py horde               # AI-Horde worker: poll cluster, submit results
 python3 swarm.py down
 ```
+
+The local web UI is always at `http://<host>:5100/ui`; raw config at
+`/api/config`, stats at `/api/stats` and `/api/horde_stats`.
 
 ## Serving chat UIs (SillyTavern)
 
@@ -44,6 +49,37 @@ judge = "bravo"
   chat, good for questions).
 - Members answer with the full ST history (ST is still the memory); the
   blackboard records candidates as `chat` entries.
+
+## Horde worker mode
+
+Run the swarm as an [AI-Horde](https://stablehorde.net/) text worker: it
+polls a cluster for jobs, runs each through the local members, and submits
+the result back to earn kudos. `./set_and_start_horde.sh` does this
+(`python3 swarm.py horde`). The local API stays live during polling, so
+SillyTavern and the horde can run side by side.
+
+```toml
+[horde]
+cluster = "https://stablehorde.net"   # master base; paths carry /api/v2
+api_key = "..."                       # sent as the apikey header
+name_prefix = "Swarm_Test"            # model identifier = prefix + "/" + enabled member names
+worker_id = "Mandurin3"               # worker identity sent on pop/submit
+poll_interval = 3.0
+max_length = 1024
+max_context_length = 20480
+quiet = true                          # suppress per-job chatter
+```
+
+The model identifier shown on the master is the prefix joined with the
+**enabled** member names (rename a member -> the identifier updates on next
+start). Configure `api_key`/`worker_id` in the file or via the web UI.
+
+Horde text jobs arrive in koboldcpp raw-generation form (`<|turn>` markers
+plus koboldcpp sampling params). The worker sends the raw prompt to each
+enabled member's `/v1/completions` endpoint (not chat, which reasoning
+models return empty content for), then the judge merges the candidates into
+one final reply. Each job logs elapsed time, member count, generation
+length, and kudos earned.
 
 ## Modes
 
@@ -118,6 +154,26 @@ If `url` is set instead of launching, the member is treated as external
 
 Roles: `planner`, `worker`, `critic`, `synth`, or `any`. Override per run
 with `--roles '{"planner":"alpha","critic":"charlie"}'`.
+
+### Connect-only members (typical for horde)
+
+Most deployments just connect to servers that already run elsewhere
+(koboldcpp, llama-server, another swarm): give each member a `url` and the
+six fields name/url/temperature/reasoning/reasoning_style/enabled. No local
+process is launched. The web UI (`/ui`) lists these and has **Add Member**
+and per-row **Remove** buttons, so the roster is edited live without touching
+the file. Only enabled members generate; disabled ones are ignored by the
+fan-out and by the horde model identifier.
+
+```toml
+[[member]]
+name = "Hemmingway"
+url = "http://192.168.1.101:5001"
+temperature = 0.7
+enabled = true
+reasoning = "auto"
+reasoning_style = "chat_template_kwargs"   # or enable_thinking / thinking_type / reasoning_effort / none
+```
 
 ## Layout
 
