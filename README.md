@@ -71,8 +71,16 @@ max_context_length = 20480
 concurrency = 0                       # jobs processed in parallel (0/1 = one at a time)
 job_timeout = 120                     # hard wall-clock budget per job (s)
 judge_reserve = 30                    # seconds of that budget reserved for the judge merge
+alt_judge = ""                        # backup judge when the primary is busy/503
 quiet = true                          # suppress per-job chatter
 ```
+
+Judging is a ladder: primary `judge` -> `alt_judge` -> longest raw member
+answer. koboldcpp per-IP rate limits (HTTP 503 "sending requests too
+quickly") on the judge never fault a job: the worker honours the "try again
+in N seconds" delay, falls back to the alternate judge, and finally submits
+a raw candidate. A submitted single-model reply earns kudos; only genuine
+failures count against the worker.
 
 The model identifier shown on the master is the prefix joined with the
 **enabled** member names (rename a member -> the identifier updates on next

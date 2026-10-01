@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import random
+import re
 import signal
 import socket
 import sqlite3
@@ -1274,7 +1275,7 @@ def serialize_toml(cfg, members_rows):
         lines.append("[horde]")
         for k in ("cluster", "api_key", "name_prefix", "worker_id", "poll_interval",
                   "max_length", "max_context_length", "concurrency",
-                  "job_timeout", "judge_reserve"):
+                  "job_timeout", "judge_reserve", "alt_judge"):
             if hcfg.get(k) is not None:
                 v = hcfg[k]
                 lines.append(f"{k} = " + (toml_str(v) if isinstance(v, str) else str(v)))
@@ -2205,6 +2206,7 @@ def run_horde(state):
     pop_models = hcfg.get("pop_models", "named")
     mode = scfg.get("mode", "ensemble")
     judge = scfg.get("judge")
+    alt_judge = hcfg.get("alt_judge", "")
 
     state["horde_stats"] = {"jobs": 0, "kudos_earned": 0.0, "kudos_paid": 0.0,
                             "tokens_in": 0, "tokens_out": 0, "started": time.time()}
@@ -2311,8 +2313,15 @@ def run_horde(state):
             fault(j, "deadline reached before merge")
             return
         merged = "\n\n".join(f"[{nm}] {ans[:600]}" for nm, ans in candidates.items())
-        judge_member = judge if judge in state["fleet"].members and \
-            state["fleet"].members[judge].enabled else active[0]
+        # Judge ladder: primary judge, then alt_judge (horde config), then raw
+        # candidate fallback. A 503-prone judge must never fault the whole job.
+        judge_names = []
+        for cand in (judge, alt_judge):
+            if cand and cand in state["fleet"].members and \
+               state["fleet"].members[cand].enabled and cand not in judge_names:
+                judge_names.append(cand)
+        if not judge_names:
+            judge_names = [active[0]]
         judge_msgs = [
             {"role": "system",
              "content": "Several models answered the same request. Produce one single "
@@ -2327,30 +2336,44 @@ def run_horde(state):
         # while budget remains; every attempt is capped at the time actually left.
         final = None
         jerr = None
-        for attempt in range(3):
-            rem = int(deadline - time.time())
-            if rem < 10:
-                break
-            try:
-                final = chat(state["fleet"], judge_member, judge_msgs,
-                             temperature=0.4, timeout=rem)
-                break
-            except urllib.error.HTTPError as e:
-                jerr = e
-                if e.code == 503:
-                    time.sleep(min(2.0 * (attempt + 1),
-                                   max(0.0, deadline - time.time() - 10)))
-                else:
+        for jm in judge_names:
+            for attempt in range(2):
+                rem = int(deadline - time.time())
+                if rem < 10:
                     break
-            except Exception as e:
-                jerr = e
+                try:
+                    final = chat(state["fleet"], jm, judge_msgs,
+                                 temperature=0.4, timeout=rem)
+                    break
+                except urllib.error.HTTPError as e:
+                    jerr = e
+                    if e.code != 503:
+                        break
+                    # honour koboldcpp's "try again in N seconds"
+                    delay = 2.0 * (attempt + 1)
+                    try:
+                        m = re.search(r"try again in (\d+)",
+                                      e.read().decode(errors="replace"))
+                        if m:
+                            delay = int(m.group(1)) + 1.0
+                    except Exception:
+                        pass
+                    rem_f = deadline - time.time() - 10
+                    if rem_f <= 0:
+                        break
+                    time.sleep(min(delay, rem_f))
+                except Exception as e:
+                    jerr = e
+                    break
+            if final is not None:
                 break
         if final is None:
-            punish()
-            print(f"[horde] job {str(j.get('id'))[:8]} judge failed: {jerr}; faulting",
-                  file=sys.stderr)
-            fault(j, "judge failed")
-            return
+            # Judges busy/rate-limited: submit the longest raw answer. One
+            # model's reply earns kudos; a faulted job punishes us, and the
+            # punish storm maintenance-flagged the worker on the master.
+            final = max(candidates.values(), key=len)
+            print(f"[horde] job {str(j.get('id'))[:8]} judge failed ({jerr}); "
+                  f"submitting raw candidate", file=sys.stderr)
         if not final or not final.strip():
             # fall back to the best raw candidate rather than submit empty
             final = next(iter(candidates.values()))
