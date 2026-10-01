@@ -1693,9 +1693,13 @@ def make_handler(state):
             # Set request ID for structured logging
             set_request_id(str(uuid.uuid4())[:8])
             
-            # Optional raw-request debug dump: touch .swarm/dump_requests
+            # Optional raw-request debug dump: touch .swarm/dump_requests.
+            # Suppressed while quiet is on (privacy: no plaintext prompt dumps).
             try:
-                if os.path.exists(HERE / ".swarm" / "dump_requests"):
+                dump_quiet = state["cfg"].get("horde", {}).get(
+                    "quiet", state["cfg"].get("serve", {}).get("quiet", True))
+                if (os.path.exists(HERE / ".swarm" / "dump_requests")
+                        and not dump_quiet):
                     ddir = HERE / ".swarm" / "reqs"
                     ddir.mkdir(exist_ok=True)
                     with open(ddir / (get_request_id() + ".json"), "w") as f:
