@@ -1,6 +1,6 @@
 # LLMSwarm
 
-Supervisor that runs several llama.cpp `llama-server` instances together and
+Supervisor that runs several Koboldcpp (and llama.cpp `llama-server`) instances together and
 coordinates them as a swarm. Stdlib-only Python; llama.cpp itself barely
 changes because the orchestration lives here, on top of the servers.
 
