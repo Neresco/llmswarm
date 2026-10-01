@@ -16,9 +16,9 @@ judge = "Hemmingway"
 
 [horde]
 cluster = "https://stablehorde.net"
-api_key = "1uee7tPB5e0CtOhGRQuBpw"
+api_key = ""
 name_prefix = "Swarm_Test"
-worker_id = "Mandurin3"
+worker_id = ""
 poll_interval = 3.0
 max_length = 1024
 max_context_length = 20480
