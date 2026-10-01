@@ -2339,7 +2339,7 @@ def run_horde(state):
               f"members {len(candidates)}, +{reward:.2f} kudos (total {kudos_earned:.1f})",
               file=sys.stderr)
 
-    concurrency = max(1, int(hcfg.get("concurrency", 3)))
+    concurrency = max(1, int(hcfg.get("concurrency", 0)))
     job_pool = ThreadPoolExecutor(max_workers=concurrency)
     while exitcounter < 10:
         time.sleep(poll_seconds)
