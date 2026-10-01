@@ -1273,7 +1273,7 @@ def serialize_toml(cfg, members_rows):
         lines.append("")
         lines.append("[horde]")
         for k in ("cluster", "api_key", "name_prefix", "worker_id", "poll_interval",
-                  "max_length", "max_context_length"):
+                  "max_length", "max_context_length", "concurrency"):
             if hcfg.get(k) is not None:
                 v = hcfg[k]
                 lines.append(f"{k} = " + (toml_str(v) if isinstance(v, str) else str(v)))
@@ -1375,6 +1375,8 @@ Port/host changes need a full supervisor restart.</small></p>
 <textarea id=jprompt rows=3></textarea></div>
 <div class=field><label>Serve port (full restart)</label><input id=port size=6></div>
 <div class=field><label>Member timeout s (0=off, ensemble)</label><input id=member_timeout size=6></div>
+<h3>Horde worker</h3>
+<div class=field><label>Concurrent jobs (0 = one at a time)</label><input id=concurrency size=4></div>
 <p><button id=save>Save &amp; Apply</button><span id=status></span></p>
 <h3>Last Request Details</h3>
 <button onclick=showDetails()>Show Member Outputs</button>
@@ -1421,6 +1423,7 @@ async function loadCfg(){
   document.getElementById('reasoning').value=cfg.serve.reasoning||'off';
   document.getElementById('port').value=cfg.serve.port;
   document.getElementById('member_timeout').value=cfg.serve.member_timeout??0;
+  document.getElementById('concurrency').value=(cfg.horde&&cfg.horde.concurrency??3);
 }
 const MODE_HELP={
   ensemble:"Ensemble: every member answers in parallel; the judge merges all replies into one final answer.",
@@ -1476,6 +1479,7 @@ function collect(){
                  judge_prompt:document.getElementById('jprompt').value,
                  port:+document.getElementById('port').value,
                  member_timeout:+document.getElementById('member_timeout').value||0},
+          horde:{concurrency:+document.getElementById('concurrency').value||3},
           members};
 }
 async function save(){
@@ -1684,6 +1688,7 @@ def make_handler(state):
             elif self.path == "/api/config":
                 self._send(200, json.dumps({
                     "serve": state["cfg"]["serve"],
+                    "horde": state["cfg"].get("horde", {}),
                     "members": members_public(state["fleet"]),
                 }).encode())
             elif self.path == "/health":
@@ -2117,6 +2122,10 @@ def make_handler(state):
             new_cfg = dict(state["cfg"])
             new_cfg["serve"] = {**old_serve, **scfg,
                                 "host": old_serve.get("host", "0.0.0.0")}
+            hcfg_in = body.get("horde", {})
+            old_horde = state["cfg"].get("horde", {})
+            if hcfg_in:
+                new_cfg["horde"] = {**old_horde, **hcfg_in}
             toml_text = serialize_toml(new_cfg, new_members)
             try:
                 open(state["toml_path"], "w").write(toml_text)
@@ -2234,65 +2243,37 @@ def run_horde(state):
         except Exception:
             time.sleep(2)
 
-    exitcounter = punishcounter = rewardcounter = 0
+    exitcounter = punishcounter = 0
     session_start = time.time()
     kudos_earned = 0.0
     jobs_done = 0
-    last_local_req = time.time()
-    while exitcounter < 10:
-        time.sleep(poll_seconds)
-        if punishcounter >= 5:
-            punishcounter = 0
-            exitcounter += 1
-            if exitcounter >= 10:
-                print("[horde] exit limit reached (too many errors)", file=sys.stderr)
-                break
-            penalty = 2 ** exitcounter
-            print(f"[horde] paused {penalty} min - too many errors", file=sys.stderr)
-            time.sleep(60 * penalty)
-            print("[horde] resumed", file=sys.stderr)
-            continue
-        active = [n for n in state["fleet"].order if state["fleet"].members[n].enabled]
-        try:
-            pop = api("POST", "/api/v2/generate/text/pop", {
-                "name": worker_id,
-                "models": [name] if pop_models == "named" else [],
-                "max_length": max_length,
-                "max_context_length": max_context,
-                "softprompts": [],
-                "bridge_agent": "llmswarm:1.0:local"})
-        except Exception as e:
+    stats_lock = threading.Lock()
+
+    def punish():
+        nonlocal punishcounter
+        with stats_lock:
             punishcounter += 1
-            print(f"[horde] pop failed: {e}; waiting 10s", file=sys.stderr)
-            time.sleep(10)
-            continue
-        # master returns a single job envelope; id is null/empty when no job is queued.
-        if isinstance(pop, list):
-            pop = pop[0] if pop else {}
-        if not isinstance(pop, dict) or not pop.get("id"):
-            # no job right now — normal idle state, not an error
-            time.sleep(1)
-            continue
-        j = pop
+
+    # One job end-to-end (fan-out + judge + submit) runs in its own worker thread so
+    # queued jobs overlap: while job A is being judged/submitted, job B's member
+    # fan-out can already be generating. Bounded by `concurrency`.
+    def process_job(j):
+        nonlocal kudos_earned, jobs_done
         payload = j["payload"] if isinstance(j.get("payload"), dict) else {}
         prompt = payload.get("prompt") or j.get("prompt", "")
-        # Horde text jobs are raw koboldcpp-style generation requests: the prompt
-        # carries <|turn> markers and koboldcpp sampling params live directly in the
-        # payload. Every enabled member generates in parallel (raw /v1/completions,
-        # which reasoning models handle correctly), then the judge merges all replies
-        # into the single final answer — same ensemble shape as the chat path.
         if not prompt:
-            punishcounter += 1
-            continue
+            punish()
+            return
         t_job = time.time()
-        max_length = int(payload.get("max_length", max_length))
+        job_max_length = int(payload.get("max_length", max_length))
         min_p = payload.get("min_p")
         temp = payload.get("temperature", 1.0)
+        active = [n for n in state["fleet"].order if state["fleet"].members[n].enabled]
         candidates = {}
         def raw_one(nm):
             try:
                 ans = raw_complete(state["fleet"], nm, prompt, params=payload,
-                                   max_length=max_length, min_p=min_p,
+                                   max_length=job_max_length, min_p=min_p,
                                    temperature=temp, timeout=6000)
                 return nm, (ans or "").strip() or None
             except Exception:
@@ -2302,8 +2283,8 @@ def run_horde(state):
                 if ans:
                     candidates[nm] = ans
         if not candidates:
-            punishcounter += 1
-            continue
+            punish()
+            return
         merged = "\n\n".join(f"[{nm}] {ans[:600]}" for nm, ans in candidates.items())
         judge_member = judge if judge in state["fleet"].members and \
             state["fleet"].members[judge].enabled else active[0]
@@ -2322,28 +2303,25 @@ def run_horde(state):
             final = chat_with_retry(state["fleet"], judge_member, judge_msgs,
                                     max_retries=3, base_delay=2.0, temperature=0.4)
         except Exception as e:
-            punishcounter += 1
+            punish()
             print(f"[horde] job {j.get('id')} judge failed: {e}", file=sys.stderr)
-            continue
+            return
         if not final or not final.strip():
             # fall back to the best raw candidate rather than submit empty
             final = next(iter(candidates.values()))
-        if not quiet:
-            print(f"[horde] job {j.get('id')}: generation len={len(final) if final else 'NONE'}", file=sys.stderr)
         if not final or not final.strip():
-            # empty reply — report faulted rather than submitting an empty generation (400)
             try:
                 api("POST", "/api/v2/generate/text/submit",
                     {"id": j.get("id"), "generation": "", "state": "faulted", "seed": -1})
             except Exception as e:
-                punishcounter += 1
+                punish()
                 print(f"[horde] faulted submit failed: {e}", file=sys.stderr)
-            continue
+            return
         try:
             sub = api("POST", "/api/v2/generate/text/submit",
                       {"id": j.get("id"), "generation": final, "seed": 0})
         except Exception as e:
-            punishcounter += 1
+            punish()
             body = ""
             if getattr(e, "read", None):
                 try:
@@ -2351,30 +2329,59 @@ def run_horde(state):
                 except Exception:
                     pass
             print(f"[horde] submit failed: {e} {body}", file=sys.stderr)
-            continue
+            return
         reward = float(sub.get("reward", 1.0) or 0)
-        kudos_earned += reward
-        jobs_done += 1
+        with stats_lock:
+            kudos_earned += reward
+            jobs_done += 1
+            state["horde_stats"] = {
+                "jobs": jobs_done, "kudos_earned": round(kudos_earned, 1),
+                "kudos_paid": 0.0, "tokens_in": 0, "tokens_out": 0,
+                "started": session_start}
         elapsed = time.time() - t_job
         print(f"[horde] job {str(j.get('id'))[:8]}: {elapsed:.1f}s, gen {len(final)} chars, "
               f"members {len(candidates)}, +{reward:.2f} kudos (total {kudos_earned:.1f})",
               file=sys.stderr)
-        rewardcounter += 1
-        if rewardcounter > 50:
-            rewardcounter = max(0, rewardcounter - 1)
-            if not quiet:
-                print(f"[horde] {reward:.1f} kudos; total {kudos_earned:.0f} in "
-                      f"{(time.time()-session_start)/3600:.2f}h; jobs {jobs_done}",
-                      file=sys.stderr)
-        jobs_done += 1
-        state["horde_stats"] = {
-            "jobs": jobs_done, "kudos_earned": round(kudos_earned, 1),
-            "kudos_paid": 0.0, "tokens_in": 0, "tokens_out": 0,
-            "started": session_start}
-        if not quiet:
-            print(f"[horde] job {j.get('id')} done (reward {reward:.1f})",
-                  file=sys.stderr)
-        last_local_req = time.time()
+
+    concurrency = max(1, int(hcfg.get("concurrency", 3)))
+    job_pool = ThreadPoolExecutor(max_workers=concurrency)
+    while exitcounter < 10:
+        time.sleep(poll_seconds)
+        with stats_lock:
+            over = punishcounter >= 5
+            if over:
+                punishcounter = 0
+                exitcounter += 1
+        if over:
+            if exitcounter >= 10:
+                print("[horde] exit limit reached (too many errors)", file=sys.stderr)
+                break
+            penalty = 2 ** exitcounter
+            print(f"[horde] paused {penalty} min - too many errors", file=sys.stderr)
+            time.sleep(60 * penalty)
+            print("[horde] resumed", file=sys.stderr)
+            continue
+        try:
+            pop = api("POST", "/api/v2/generate/text/pop", {
+                "name": worker_id,
+                "models": [name] if pop_models == "named" else [],
+                "max_length": max_length,
+                "max_context_length": max_context,
+                "softprompts": [],
+                "bridge_agent": "llmswarm:1.0:local"})
+        except Exception as e:
+            punish()
+            print(f"[horde] pop failed: {e}; waiting 10s", file=sys.stderr)
+            time.sleep(10)
+            continue
+        # master returns a single job envelope; id is null/empty when no job is queued.
+        if isinstance(pop, list):
+            pop = pop[0] if pop else {}
+        if not isinstance(pop, dict) or not pop.get("id"):
+            # no job right now — normal idle state, not an error
+            time.sleep(1)
+            continue
+        job_pool.submit(process_job, pop)
 
     server.shutdown()
     server.server_close()
