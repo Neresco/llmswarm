@@ -1273,7 +1273,8 @@ def serialize_toml(cfg, members_rows):
         lines.append("")
         lines.append("[horde]")
         for k in ("cluster", "api_key", "name_prefix", "worker_id", "poll_interval",
-                  "max_length", "max_context_length", "concurrency"):
+                  "max_length", "max_context_length", "concurrency",
+                  "job_timeout", "judge_reserve"):
             if hcfg.get(k) is not None:
                 v = hcfg[k]
                 lines.append(f"{k} = " + (toml_str(v) if isinstance(v, str) else str(v)))
@@ -2253,14 +2254,35 @@ def run_horde(state):
     # One job end-to-end (fan-out + judge + submit) runs in its own worker thread so
     # queued jobs overlap: while job A is being judged/submitted, job B's member
     # fan-out can already be generating. Bounded by `concurrency`.
+    def fault(j, why):
+        # Submitting faulted quickly is better than letting the job expire on the
+        # master: an expired (dropped) job counts against us, a faulted one does not.
+        try:
+            api("POST", "/api/v2/generate/text/submit",
+                {"id": j.get("id"), "generation": "", "state": "faulted", "seed": -1})
+        except Exception as e:
+            print(f"[horde] faulted submit failed: {e}", file=sys.stderr)
+
     def process_job(j):
-        nonlocal kudos_earned, jobs_done
+        nonlocal kudos_earned, jobs_done, in_flight
+        with stats_lock:
+            in_flight += 1
+        try:
+            _process_job(j)
+        finally:
+            with stats_lock:
+                in_flight -= 1
+
+    def _process_job(j):
         payload = j["payload"] if isinstance(j.get("payload"), dict) else {}
         prompt = payload.get("prompt") or j.get("prompt", "")
         if not prompt:
             punish()
             return
         t_job = time.time()
+        # Hard deadline: submit (even faulted) before the master's job timeout so
+        # the job is never counted as dropped.
+        deadline = t_job + job_timeout
         job_max_length = int(payload.get("max_length", max_length))
         min_p = payload.get("min_p")
         temp = payload.get("temperature", 1.0)
@@ -2268,9 +2290,11 @@ def run_horde(state):
         candidates = {}
         def raw_one(nm):
             try:
+                # per-member timeout: leave judge_reserve for the merge step
+                rem = deadline - time.time() - judge_reserve
                 ans = raw_complete(state["fleet"], nm, prompt, params=payload,
                                    max_length=job_max_length, min_p=min_p,
-                                   temperature=temp, timeout=6000)
+                                   temperature=temp, timeout=max(10, int(rem)))
                 return nm, (ans or "").strip() or None
             except Exception:
                 return nm, None
@@ -2280,6 +2304,11 @@ def run_horde(state):
                     candidates[nm] = ans
         if not candidates:
             punish()
+            fault(j, "no member answers")
+            return
+        if time.time() > deadline - 10:
+            # generation ate the budget; fault now rather than expire mid-judge
+            fault(j, "deadline reached before merge")
             return
         merged = "\n\n".join(f"[{nm}] {ans[:600]}" for nm, ans in candidates.items())
         judge_member = judge if judge in state["fleet"].members and \
@@ -2293,14 +2322,34 @@ def run_horde(state):
              "content": "Original request:\n" + prompt +
                         "\n\nCandidate answers:\n" + merged},
         ]
-        try:
-            # retry on 503 (koboldcpp "sending requests too quickly") since the judge
-            # is often the same member that just did a raw generation a moment ago
-            final = chat_with_retry(state["fleet"], judge_member, judge_msgs,
-                                    max_retries=3, base_delay=2.0, temperature=0.4)
-        except Exception as e:
+        # Deadline-aware judge: chat_with_retry applies its timeout per-attempt, so
+        # 3 retries could run minutes past the master's countdown. Retry 503s only
+        # while budget remains; every attempt is capped at the time actually left.
+        final = None
+        jerr = None
+        for attempt in range(3):
+            rem = int(deadline - time.time())
+            if rem < 10:
+                break
+            try:
+                final = chat(state["fleet"], judge_member, judge_msgs,
+                             temperature=0.4, timeout=rem)
+                break
+            except urllib.error.HTTPError as e:
+                jerr = e
+                if e.code == 503:
+                    time.sleep(min(2.0 * (attempt + 1),
+                                   max(0.0, deadline - time.time() - 10)))
+                else:
+                    break
+            except Exception as e:
+                jerr = e
+                break
+        if final is None:
             punish()
-            print(f"[horde] job {j.get('id')} judge failed: {e}", file=sys.stderr)
+            print(f"[horde] job {str(j.get('id'))[:8]} judge failed: {jerr}; faulting",
+                  file=sys.stderr)
+            fault(j, "judge failed")
             return
         if not final or not final.strip():
             # fall back to the best raw candidate rather than submit empty
@@ -2340,7 +2389,12 @@ def run_horde(state):
               file=sys.stderr)
 
     concurrency = max(1, int(hcfg.get("concurrency", 0)))
+    # Hard per-job wall-clock budget. Submitting faulted before this beats letting
+    # the master expire the job (expired = dropped = punished).
+    job_timeout = int(hcfg.get("job_timeout", 120))
+    judge_reserve = int(hcfg.get("judge_reserve", 30))
     job_pool = ThreadPoolExecutor(max_workers=concurrency)
+    in_flight = 0
     while exitcounter < 10:
         time.sleep(poll_seconds)
         with stats_lock:
@@ -2356,6 +2410,14 @@ def run_horde(state):
             print(f"[horde] paused {penalty} min - too many errors", file=sys.stderr)
             time.sleep(60 * penalty)
             print("[horde] resumed", file=sys.stderr)
+            continue
+        # The master starts the job countdown the moment we pop. Popping while all
+        # pool slots are busy puts jobs in a local queue where they expire on the
+        # master and count as drops. Only pop when a slot is genuinely free.
+        with stats_lock:
+            busy = in_flight >= concurrency
+        if busy:
+            time.sleep(1)
             continue
         try:
             pop = api("POST", "/api/v2/generate/text/pop", {
