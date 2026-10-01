@@ -1423,7 +1423,7 @@ async function loadCfg(){
   document.getElementById('reasoning').value=cfg.serve.reasoning||'off';
   document.getElementById('port').value=cfg.serve.port;
   document.getElementById('member_timeout').value=cfg.serve.member_timeout??0;
-  document.getElementById('concurrency').value=(cfg.horde&&cfg.horde.concurrency??3);
+  document.getElementById('concurrency').value=((cfg.horde&&cfg.horde.concurrency)||3);
 }
 const MODE_HELP={
   ensemble:"Ensemble: every member answers in parallel; the judge merges all replies into one final answer.",
