@@ -2210,9 +2210,6 @@ def run_horde(state):
             time.sleep(60 * penalty)
             print("[horde] resumed", file=sys.stderr)
             continue
-        if time.time() - last_local_req > 20:
-            time.sleep(1)
-            continue
         active = [n for n in state["fleet"].order if state["fleet"].members[n].enabled]
         try:
             pop = api("POST", "/api/v2/generate/text/pop", {
