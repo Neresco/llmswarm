@@ -22,7 +22,7 @@ worker_id = ""
 poll_interval = 3.0
 max_length = 1024
 max_context_length = 20480
-concurrency = 3
+concurrency = 0
 quiet = true
 
 [[member]]
