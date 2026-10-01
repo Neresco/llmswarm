@@ -57,10 +57,14 @@ def validate_config(cfg):
             issues.append(f"ERROR: Duplicate member name: {name}")
         seen_names.add(name)
         
-        # members are connect-only: identity is the url. Show each endpoint explicitly
-        # rather than warning on matching ports (different hosts may reuse a port).
+        # members are connect-only: identity is the url. Show each enabled endpoint
+        # explicitly rather than warning on matching ports (different hosts may reuse a
+        # port). Disabled members are noise in the startup banner.
+        en = m.get("enabled", True)
+        if isinstance(en, str):
+            en = en.strip().lower() not in ("0", "false", "no", "off")
         url = m.get("url", "")
-        if url:
+        if url and en:
             issues.append(f"INFO: {name} - {url}")
         
         # Validate roles
@@ -1343,8 +1347,10 @@ UI_HTML = """<!doctype html><html><head><meta charset=utf-8><title>LLMSwarm</tit
 <style>
 body{font-family:system-ui;background:#151515;color:#ddd;max-width:1280px;margin:1.5rem auto;font-size:16px}
 h2{color:#9cf} input,textarea,select{background:#222;color:#ddd;border:1px solid #555;padding:8px 9px;border-radius:3px;font-size:15px}
-.mrow{display:grid;grid-template-columns:180px minmax(260px,1.8fr) 80px 110px 150px 96px;gap:8px;margin:4px 0}
-.mhead{display:grid;grid-template-columns:180px minmax(260px,1.8fr) 80px 110px 150px 96px;gap:8px;color:#8aa;font-size:13px}
+.mrow{display:grid;grid-template-columns:180px minmax(260px,1.8fr) 80px 110px 150px 96px 56px;gap:8px;margin:4px 0;align-items:center}
+.mhead{display:grid;grid-template-columns:180px minmax(260px,1.8fr) 80px 110px 150px 96px 56px;gap:8px;color:#8aa;font-size:13px}
+.rm{width:52px;padding:6px 4px;font-size:12px;background:#a33;color:#fff;border:0;border-radius:3px;cursor:pointer}
+.rm:hover{background:#c44}
 .tog{padding:5px 8px;font-size:12px;border:0;border-radius:3px;cursor:pointer;color:#fff}
 .field{margin:10px 0}.field label{display:block;margin-bottom:3px;color:#aaa}
 textarea{width:100%;box-sizing:border-box}
@@ -1355,8 +1361,9 @@ button{background:#2a6;color:#fff;border:0;padding:8px 18px;border-radius:4px;cu
 <p><small>member changes restart the llama-server processes; serve settings apply live.
 Port/host changes need a full supervisor restart.</small></p>
 <h3>Members</h3>
-<div class=mhead><span>name</span><span>endpoint URL</span><span>temp</span><span>thinking</span><span>thinking style</span><span>enabled</span></div>
+<div class=mhead><span>name</span><span>endpoint URL</span><span>temp</span><span>thinking</span><span>thinking style</span><span>enabled</span><span>remove</span></div>
 <div id=members></div>
+<button id=addmember onclick=addMember() style="margin:6px 0;background:#28a">Add Member</button>
 <div class=field><label>Serve mode</label>
 <select id=mode><option>ensemble</option><option>swarm</option><option>agent</option></select>
 <div id=modehelp style="color:#777;font-size:12px;margin-top:4px"></div></div>
@@ -1391,9 +1398,12 @@ async function loadCfg(){
           rsn=sel(['auto','on','off'],m.reasoning||'auto'),
           rstyle=sel(['chat_template_kwargs','enable_thinking','thinking_type','reasoning_effort','none'],
                      m.reasoning_style||'chat_template_kwargs'),
-          enb=sel(['true','false'],m.enabled?'true':'false');
+          enb=sel(['true','false'],m.enabled?'true':'false'),
+          rm=inp('x','');
+    rm.placeholder='remove'; rm.title='Click to remove this member'; rm.className='rm';
     enb.dataset.role='toggle';
-    d._fields={name,url,temp,rsn,rstyle,enb};
+    d._fields={name,url,temp,rsn,rstyle,enb,rm};
+    rm.onclick=()=>removeMember(d);
     mrow.appendChild(d);
   });
   const jSel=document.getElementById('judge');
@@ -1421,6 +1431,37 @@ function updateModeHelp(){
   const v=document.getElementById('mode').value;
   document.getElementById('modehelp').textContent=MODE_HELP[v]||"";
 }
+function addMember(){
+  const d=document.createElement('div'); d.className='mrow';
+  const inp=(ph,v)=>{const i=document.createElement('input');i.value=v??'';i.placeholder=ph||'';d.appendChild(i);return i;};
+  const sel=(opts,v)=>{const s=document.createElement('select');
+    opts.forEach(o=>{const x=document.createElement('option');x.value=o;x.textContent=o;s.appendChild(x);});
+    s.value=v;d.appendChild(s);return s;};
+  const name=inp('name'), url=inp('http://host:port'),
+        temp=inp('temp',0.7),
+        rsn=sel(['auto','on','off'],'auto'),
+        rstyle=sel(['chat_template_kwargs','enable_thinking','thinking_type','reasoning_effort','none'],
+                   'chat_template_kwargs'),
+        enb=sel(['true','false'],'false'),
+        rm=inp('x','');
+  rm.placeholder='remove'; rm.title='Click to remove this member';
+  rm.className='rm'; rm.onclick=()=>removeMember(d);
+  enb.dataset.role='toggle';
+  d._fields={name,url,temp,rsn,rstyle,enb,rm};
+  document.getElementById('members').appendChild(d);
+  name.focus();
+}
+function removeMember(d){
+  d.remove();
+  const jSel=document.getElementById('judge');
+  // keep judge options in sync with remaining members
+  jSel.innerHTML='';
+  [...document.querySelectorAll('#members .mrow')].forEach(r=>{
+    const o=document.createElement('option');
+    o.value=r._fields.name.value.trim(); o.textContent=o.value||'(unnamed)';
+    jSel.appendChild(o);
+  });
+}
 
 function collect(){
   const members=[...document.querySelectorAll('#members .mrow')].map(d=>{
@@ -1428,7 +1469,7 @@ function collect(){
     return {name:f.name.value.trim(),url:f.url.value.trim(),temperature:f.temp.value,
             reasoning:f.rsn.value,reasoning_style:f.rstyle.value,
             enabled:f.enb.value==='false'};
-  });
+  }).filter(m=>m.name);  // drop blank rows left from an unfilled Add Member
   return {serve:{mode:document.getElementById('mode').value,
                  reasoning:document.getElementById('reasoning').value,
                  judge:document.getElementById('judge').value,
