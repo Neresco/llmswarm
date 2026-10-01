@@ -1375,8 +1375,6 @@ Port/host changes need a full supervisor restart.</small></p>
 <textarea id=jprompt rows=3></textarea></div>
 <div class=field><label>Serve port (full restart)</label><input id=port size=6></div>
 <div class=field><label>Member timeout s (0=off, ensemble)</label><input id=member_timeout size=6></div>
-<h3>Horde worker</h3>
-<div class=field><label>Concurrent jobs (0 = one at a time)</label><input id=concurrency size=4></div>
 <p><button id=save>Save &amp; Apply</button><span id=status></span></p>
 <h3>Last Request Details</h3>
 <button onclick=showDetails()>Show Member Outputs</button>
@@ -1423,7 +1421,6 @@ async function loadCfg(){
   document.getElementById('reasoning').value=cfg.serve.reasoning||'off';
   document.getElementById('port').value=cfg.serve.port;
   document.getElementById('member_timeout').value=cfg.serve.member_timeout??0;
-  document.getElementById('concurrency').value=((cfg.horde&&cfg.horde.concurrency)||3);
 }
 const MODE_HELP={
   ensemble:"Ensemble: every member answers in parallel; the judge merges all replies into one final answer.",
@@ -1479,7 +1476,6 @@ function collect(){
                  judge_prompt:document.getElementById('jprompt').value,
                  port:+document.getElementById('port').value,
                  member_timeout:+document.getElementById('member_timeout').value||0},
-          horde:{concurrency:+document.getElementById('concurrency').value||3},
           members};
 }
 async function save(){
