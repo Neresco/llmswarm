@@ -2242,6 +2242,7 @@ def run_horde(state):
         if not prompt:
             punishcounter += 1
             continue
+        t_job = time.time()
         max_length = int(payload.get("max_length", max_length))
         min_p = payload.get("min_p")
         temp = payload.get("temperature", 1.0)
@@ -2308,6 +2309,11 @@ def run_horde(state):
             continue
         reward = float(sub.get("reward", 1.0) or 0)
         kudos_earned += reward
+        jobs_done += 1
+        elapsed = time.time() - t_job
+        print(f"[horde] job {str(j.get('id'))[:8]}: {elapsed:.1f}s, gen {len(final)} chars, "
+              f"members {len(candidates)}, +{reward:.2f} kudos (total {kudos_earned:.1f})",
+              file=sys.stderr)
         rewardcounter += 1
         if rewardcounter > 50:
             rewardcounter = max(0, rewardcounter - 1)
