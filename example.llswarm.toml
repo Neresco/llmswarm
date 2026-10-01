@@ -1,0 +1,86 @@
+# LLMSwarm example configuration.
+# Copy this file to swarm.toml, fill in your horde api_key and worker_id,
+# and point the members at your own endpoints. swarm.toml is local-only
+# (gitignored) so your key never lands in git.
+
+[llama]
+server_bin = "/path/to/llama.cpp/build/bin/llama-server"
+boot_timeout = 600
+
+[blackboard]
+path = ".swarm/blackboard.sqlite"
+retention_days = 0.0
+
+[serve]
+host = "0.0.0.0"
+port = 5100
+mode = "ensemble"          # ensemble = all enabled members answer, judge merges
+reasoning = "off"          # default reasoning control: off | auto | on
+member_timeout = 0.0       # per-member timeout for serve-mode fan-out (0 = off)
+judge = "Hemmingway_Qwen-27B"
+
+[horde]
+cluster = "https://stablehorde.net"
+api_key = ""               # your horde API key (required, keep it out of git)
+name_prefix = "Swarm_Test" # prefix of the advertised model identifier
+worker_id = ""             # your worker name as registered on the horde
+poll_interval = 4.0        # seconds between job pops
+max_length = 1024          # generation length offered to the master
+max_context_length = 20480 # context offered to the master
+concurrency = 0            # jobs processed in parallel (0/1 = one at a time)
+# Hard wall-clock budget per horde job (s). We submit (faulted if needed)
+# before this so the master never counts the job as dropped.
+job_timeout = 120
+# Seconds of that budget reserved for the judge merge step.
+judge_reserve = 30
+quiet = true               # suppress per-request debug output
+
+# Members are connect-only remote endpoints (koboldcpp / llama.cpp servers).
+# The url is the identity; the name is display + part of the horde model id.
+[[member]]
+name = "Hemmingway_Qwen-27B"
+url = "http://192.168.1.101:5001"
+temperature = 0.7
+enabled = true
+reasoning = "auto"
+reasoning_style = "chat_template_kwargs"
+
+[[member]]
+name = "Xotron-V4_Qwen-27B"
+url = "http://192.168.1.101:5002"
+temperature = 0.7
+enabled = true
+reasoning = "auto"
+reasoning_style = "chat_template_kwargs"
+
+[[member]]
+name = "ukisai_Swift-Qwen3.8-Flash-Next-IQ4_XS-180B"
+url = "http://192.168.1.20:5001"
+temperature = 0.7
+enabled = true
+reasoning = "auto"
+reasoning_style = "chat_template_kwargs"
+
+[[member]]
+name = "NeoHorse_Qwen-9B"
+url = "http://192.168.1.20:5002"
+temperature = 0.7
+enabled = true
+reasoning = "auto"
+reasoning_style = "chat_template_kwargs"
+
+[[member]]
+name = "slot_b"
+url = "http://127.0.0.1:5004"
+temperature = 0.2
+enabled = false
+reasoning = "auto"
+reasoning_style = "chat_template_kwargs"
+
+[[member]]
+name = "slot_c"
+url = "http://127.0.0.1:5005"
+temperature = 0.2
+enabled = false
+reasoning = "auto"
+reasoning_style = "chat_template_kwargs"

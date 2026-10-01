@@ -13,6 +13,7 @@ handles roles, parallel fan-out, and a shared knowledge store.
 ## Quick start
 
 ```sh
+cp example.llswarm.toml swarm.toml   # first run: swarm.toml is local-only (gitignored)
 python3 swarm.py up                  # boot all members defined in swarm.toml
 python3 swarm.py status
 python3 swarm.py ask --mode swarm --problem "your question"
@@ -61,18 +62,27 @@ SillyTavern and the horde can run side by side.
 ```toml
 [horde]
 cluster = "https://stablehorde.net"   # master base; paths carry /api/v2
-api_key = "..."                       # sent as the apikey header
+api_key = ""                          # your horde key, sent as the apikey header (keep it local)
 name_prefix = "Swarm_Test"            # model identifier = prefix + "/" + enabled member names
-worker_id = "Mandurin3"               # worker identity sent on pop/submit
+worker_id = "MyWorker"                # worker identity sent on pop/submit
 poll_interval = 3.0
 max_length = 1024
 max_context_length = 20480
+concurrency = 0                       # jobs processed in parallel (0/1 = one at a time)
+job_timeout = 120                     # hard wall-clock budget per job (s)
+judge_reserve = 30                    # seconds of that budget reserved for the judge merge
 quiet = true                          # suppress per-job chatter
 ```
 
 The model identifier shown on the master is the prefix joined with the
 **enabled** member names (rename a member -> the identifier updates on next
-start). Configure `api_key`/`worker_id` in the file or via the web UI.
+start). Configure `api_key`/`worker_id` in `swarm.toml` (the web UI does not
+edit horde settings).
+
+The master starts a countdown (~150 s) on a job the moment we pop it, and
+workers that let jobs expire are put into maintenance. The worker therefore
+only pops when a processing slot is free, and submits (faulted, if need be)
+before `job_timeout` elapses, so no job is ever counted as dropped.
 
 Horde text jobs arrive in koboldcpp raw-generation form (`<|turn>` markers
 plus koboldcpp sampling params). The worker sends the raw prompt to each
@@ -128,6 +138,14 @@ connect-only to the production Qwen3.8 server at 192.168.1.101:5001,
 
 ## Config (swarm.toml)
 
+`swarm.toml` is **local-only and gitignored** (it holds your horde API key).
+Start from `example.llswarm.toml`, which ships with the full schema filled
+in — copy it and set your own `api_key`, `worker_id`, and member URLs:
+
+```sh
+cp example.llswarm.toml swarm.toml
+```
+
 ```toml
 [llama]
 server_bin = "~/Programming/llama.cpp-b10985/build-rpc-cuda/bin/llama-server"
@@ -178,7 +196,8 @@ reasoning_style = "chat_template_kwargs"   # or enable_thinking / thinking_type 
 ## Layout
 
 - `swarm.py` - the whole supervisor
-- `swarm.toml` - fleet definition
+- `swarm.toml` - fleet definition (local-only, gitignored; create from `example.llswarm.toml`)
+- `example.llswarm.toml` - full example config, no secrets
 - `models/` - symlinks or copies of GGUFs used by the fleet
 - `.swarm/` - runtime: `pids.json`, `blackboard.sqlite`, `<member>.log`
 
