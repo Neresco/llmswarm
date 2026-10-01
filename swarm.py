@@ -2317,7 +2317,10 @@ def run_horde(state):
                         "\n\nCandidate answers:\n" + merged},
         ]
         try:
-            final = chat(state["fleet"], judge_member, judge_msgs, temperature=0.4)
+            # retry on 503 (koboldcpp "sending requests too quickly") since the judge
+            # is often the same member that just did a raw generation a moment ago
+            final = chat_with_retry(state["fleet"], judge_member, judge_msgs,
+                                    max_retries=3, base_delay=2.0, temperature=0.4)
         except Exception as e:
             punishcounter += 1
             print(f"[horde] job {j.get('id')} judge failed: {e}", file=sys.stderr)
