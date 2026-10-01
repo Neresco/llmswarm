@@ -16,9 +16,9 @@ judge = "Hemmingway"
 
 [horde]
 cluster = "https://stablehorde.net"
-api_key = ""
+api_key = "1uee7tPB5e0CtOhGRQuBpw"
 name_prefix = "Swarm_Test"
-worker_id = ""
+worker_id = "Mandurin3"
 poll_interval = 3.0
 max_length = 1024
 max_context_length = 20480
@@ -33,15 +33,15 @@ reasoning = "auto"
 reasoning_style = "chat_template_kwargs"
 
 [[member]]
-name = "slot_a"
+name = "Salience"
 url = "http://192.168.1.101:5002"
 temperature = 0.7
-enabled = false
+enabled = true
 reasoning = "auto"
 reasoning_style = "chat_template_kwargs"
 
 [[member]]
-name = "Salience"
+name = "Suri-Qwen3.8"
 url = "http://192.168.1.20:5001"
 temperature = 0.7
 enabled = true
@@ -49,7 +49,7 @@ reasoning = "auto"
 reasoning_style = "chat_template_kwargs"
 
 [[member]]
-name = "Suri-Qwen3.8b"
+name = "VeriLoop-E2-23000-NIKI"
 url = "http://192.168.1.20:5002"
 temperature = 0.7
 enabled = true
