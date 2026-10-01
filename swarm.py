@@ -57,17 +57,11 @@ def validate_config(cfg):
             issues.append(f"ERROR: Duplicate member name: {name}")
         seen_names.add(name)
         
-        # members are connect-only: identity is the url, not a port number
+        # members are connect-only: identity is the url. Show each endpoint explicitly
+        # rather than warning on matching ports (different hosts may reuse a port).
         url = m.get("url", "")
         if url:
-            import re as _re
-            mport = _re.search(r":(\d+)$", url.rstrip("/"))
-            port = int(mport.group(1)) if mport else 8080
-        else:
-            port = m.get("port", 8080)
-        if port in seen_ports:
-            issues.append(f"WARNING: Port {port} used by both {seen_ports[port]} and {name}")
-        seen_ports[port] = name
+            issues.append(f"INFO: {name} - {url}")
         
         # Validate roles
         roles = m.get("roles", ["any"])
