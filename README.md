@@ -199,7 +199,26 @@ temperature = 0.7
 enabled = true
 reasoning = "auto"
 reasoning_style = "chat_template_kwargs"   # or enable_thinking / thinking_type / reasoning_effort / none
+role = "judge"                             # worker | judge | alt_judge | planner
 ```
+
+### Roles
+
+Each member has one role (default `worker`), editable in the web UI dropdown
+or via `role = "..."` in the toml:
+
+| role        | generates?               | merges?                                        |
+|-------------|--------------------------|------------------------------------------------|
+| `worker`    | yes (fan-out, horde jobs)| -                                              |
+| `judge`     | no                       | primary merger of candidate answers            |
+| `alt_judge` | no                       | backup judge when the primary is busy/503      |
+| `planner`   | ensemble fan-out only    | leads `ask --mode swarm` planning              |
+
+A dedicated judge never joins the generation fan-out: it is free the moment
+a job needs merging, which shortens time-to-submit and avoids the koboldcpp
+per-IP 503 self-collision of a judge that just generated. The horde judge
+ladder is: `serve.judge` (config override) -> role `judge` ->
+role `alt_judge` -> `horde.alt_judge` -> longest raw worker answer.
 
 ## Layout
 

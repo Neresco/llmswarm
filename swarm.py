@@ -236,6 +236,9 @@ class Member:
         self.device = conf.get("device", "")
         self.rpc = conf.get("rpc", "")
         self.roles = set(conf.get("roles", ["any"])) or {"any"}
+        # single runtime role: worker | judge | alt_judge | planner.
+        # Judges never join the generation fan-out; they only merge.
+        self.role = conf.get("role", "worker")
         self.env = conf.get("env", {})
         self.server_bin = os.path.expanduser(server_bin)
         # engine: "llama.cpp" (default) or "koboldcpp"; changes the server
@@ -1291,6 +1294,7 @@ def serialize_toml(cfg, members_rows):
         lines.append("enabled = " + ("true" if m.get("enabled", True) else "false"))
         lines.append("reasoning = " + toml_str(m.get("reasoning", "auto")))
         lines.append("reasoning_style = " + toml_str(m.get("reasoning_style", "chat_template_kwargs")))
+        lines.append("role = " + toml_str(m.get("role", "worker")))
     return "\n".join(lines) + "\n"
 
 
@@ -1327,6 +1331,8 @@ def norm_members(rows):
                 if m.get("reasoning_style") in ("chat_template_kwargs", "enable_thinking",
                                                 "thinking_type", "reasoning_effort", "none")
                 else "chat_template_kwargs",
+            "role": m.get("role") if m.get("role") in
+                    ("worker", "judge", "alt_judge", "planner") else "worker",
         })
     return out
 
@@ -1341,6 +1347,7 @@ def members_public(fleet):
             "reasoning": getattr(m, "reasoning", "auto"),
             "reasoning_style": getattr(m, "reasoning_style", "chat_template_kwargs"),
             "enabled": m.enabled,
+            "role": getattr(m, "role", "worker"),
         })
     return rows
 
@@ -1349,8 +1356,8 @@ UI_HTML = """<!doctype html><html><head><meta charset=utf-8><title>LLMSwarm</tit
 <style>
 body{font-family:system-ui;background:#151515;color:#ddd;max-width:1280px;margin:1.5rem auto;font-size:16px}
 h2{color:#9cf} input,textarea,select{background:#222;color:#ddd;border:1px solid #555;padding:8px 9px;border-radius:3px;font-size:15px}
-.mrow{display:grid;grid-template-columns:180px minmax(260px,1.8fr) 80px 110px 150px 96px 56px;gap:8px;margin:4px 0;align-items:center}
-.mhead{display:grid;grid-template-columns:180px minmax(260px,1.8fr) 80px 110px 150px 96px 56px;gap:8px;color:#8aa;font-size:13px}
+.mrow{display:grid;grid-template-columns:160px minmax(220px,1.6fr) 66px 100px 100px 140px 90px 56px;gap:8px;margin:4px 0;align-items:center}
+.mhead{display:grid;grid-template-columns:160px minmax(220px,1.6fr) 66px 100px 100px 140px 90px 56px;gap:8px;color:#8aa;font-size:13px}
 .rm{width:52px;padding:6px 4px;font-size:12px;background:#a33;color:#fff;border:0;border-radius:3px;cursor:pointer}
 .rm:hover{background:#c44}
 .tog{padding:5px 8px;font-size:12px;border:0;border-radius:3px;cursor:pointer;color:#fff}
@@ -1363,7 +1370,7 @@ button{background:#2a6;color:#fff;border:0;padding:8px 18px;border-radius:4px;cu
 <p><small>member changes restart the llama-server processes; serve settings apply live.
 Port/host changes need a full supervisor restart.</small></p>
 <h3>Members</h3>
-<div class=mhead><span>name</span><span>endpoint URL</span><span>temp</span><span>thinking</span><span>thinking style</span><span>enabled</span><span>remove</span></div>
+<div class=mhead><span>name</span><span>endpoint URL</span><span>temp</span><span>role</span><span>thinking</span><span>thinking style</span><span>enabled</span><span>remove</span></div>
 <div id=members></div>
 <button id=addmember onclick=addMember() style="margin:6px 0;background:#28a">Add Member</button>
 <div class=field><label>Serve mode</label>
@@ -1397,6 +1404,7 @@ async function loadCfg(){
       s.value=v;d.appendChild(s);return s;};
     const name=inp('name',m.name), url=inp('http://host:port',m.url||''),
           temp=inp('temp',m.temperature),
+          role=sel(['worker','judge','alt_judge','planner'],m.role||'worker'),
           rsn=sel(['auto','on','off'],m.reasoning||'auto'),
           rstyle=sel(['chat_template_kwargs','enable_thinking','thinking_type','reasoning_effort','none'],
                      m.reasoning_style||'chat_template_kwargs'),
@@ -1404,7 +1412,7 @@ async function loadCfg(){
           rm=inp('x','');
     rm.placeholder='remove'; rm.title='Click to remove this member'; rm.className='rm';
     enb.dataset.role='toggle';
-    d._fields={name,url,temp,rsn,rstyle,enb,rm};
+    d._fields={name,url,temp,role,rsn,rstyle,enb,rm};
     rm.onclick=()=>removeMember(d);
     mrow.appendChild(d);
   });
@@ -1441,6 +1449,7 @@ function addMember(){
     s.value=v;d.appendChild(s);return s;};
   const name=inp('name'), url=inp('http://host:port'),
         temp=inp('temp',0.7),
+        role=sel(['worker','judge','alt_judge','planner'],'worker'),
         rsn=sel(['auto','on','off'],'auto'),
         rstyle=sel(['chat_template_kwargs','enable_thinking','thinking_type','reasoning_effort','none'],
                    'chat_template_kwargs'),
@@ -1449,7 +1458,7 @@ function addMember(){
   rm.placeholder='remove'; rm.title='Click to remove this member';
   rm.className='rm'; rm.onclick=()=>removeMember(d);
   enb.dataset.role='toggle';
-  d._fields={name,url,temp,rsn,rstyle,enb,rm};
+  d._fields={name,url,temp,role,rsn,rstyle,enb,rm};
   document.getElementById('members').appendChild(d);
   name.focus();
 }
@@ -1469,6 +1478,7 @@ function collect(){
   const members=[...document.querySelectorAll('#members .mrow')].map(d=>{
     const f=d._fields;
     return {name:f.name.value.trim(),url:f.url.value.trim(),temperature:f.temp.value,
+            role:f.role.value,
             reasoning:f.rsn.value,reasoning_style:f.rstyle.value,
             enabled:f.enb.value==='false'};
   }).filter(m=>m.name);  // drop blank rows left from an unfilled Add Member
@@ -1770,20 +1780,26 @@ def make_handler(state):
                     params["max_tokens"] = int(req["max_completion_tokens"])
                 except (TypeError, ValueError):
                     pass
-            active = [n for n in state["fleet"].order
-                      if state["fleet"].members[n].enabled]
-            if not active:
+            enabled_all = [n for n in state["fleet"].order
+                           if state["fleet"].members[n].enabled]
+            if not enabled_all:
                 self._send(503, {"error": "no enabled members; enable one in /ui"})
                 return
+            # dedicated judges/alt_judges never generate; fan-out is workers (+planners)
+            active = [n for n in enabled_all
+                      if getattr(state["fleet"].members[n], "role", "worker")
+                      in ("worker", "planner")] or enabled_all
             # skip members whose endpoint is dead (hangs on dropped packets)
             active, unreachable = healthy_members(state["fleet"], active)
             if not active:
                 self._send(503, {"error": "all enabled members unreachable",
                                  "unreachable": unreachable})
                 return
-            judge = scfg.get("judge") or active[-1]
-            if judge not in active:
-                judge = active[-1]
+            judge = scfg.get("judge")
+            if judge not in enabled_all:
+                role_j = [n for n in enabled_all
+                          if getattr(state["fleet"].members[n], "role", "worker") == "judge"]
+                judge = role_j[0] if role_j else active[-1]
             judge_system = scfg.get("judge_prompt") or JUDGE_CHAT_SYSTEM
             member_status = None
             has_tools = bool(req.get("tools"))
@@ -2192,13 +2208,17 @@ def run_horde(state):
     scfg = cfg.get("serve", {})
     hcfg = cfg.get("horde", {})
     cluster = hcfg.get("cluster", "http://localhost:5001").rstrip("/")
-    api_key = hcfg.get("api_key", "1uee7tPB5e0CtOhGRQuBpw")
+    api_key = hcfg.get("api_key", "")
+    if not api_key:
+        print("[horde] no api_key in [horde] of swarm.toml - set your horde key "
+              "there (swarm.toml is local-only and gitignored)", file=sys.stderr)
+        sys.exit(1)
     # Master model identifier derived from the live enabled member roster so renames
     # propagate. Only the prefix is hand-set in config.
     name_prefix = hcfg.get("name_prefix", "Swarm_Test")
     name = name_prefix + "/" + "_".join(
         n for n in state["fleet"].order if state["fleet"].members[n].enabled)
-    worker_id = hcfg.get("worker_id", "Mandurin3")
+    worker_id = hcfg.get("worker_id", "swarm-worker")
     poll_seconds = float(hcfg.get("poll_interval", 3))
     max_length = int(hcfg.get("max_length", 1024))
     max_context = int(hcfg.get("max_context_length", 8192))
@@ -2288,7 +2308,11 @@ def run_horde(state):
         job_max_length = int(payload.get("max_length", max_length))
         min_p = payload.get("min_p")
         temp = payload.get("temperature", 1.0)
-        active = [n for n in state["fleet"].order if state["fleet"].members[n].enabled]
+        active_all = [n for n in state["fleet"].order if state["fleet"].members[n].enabled]
+        # dedicated judges/alt_judges/planners do not generate horde jobs
+        active = [n for n in active_all
+                  if getattr(state["fleet"].members[n], "role", "worker") == "worker"] \
+            or active_all
         candidates = {}
         def raw_one(nm):
             try:
@@ -2315,10 +2339,14 @@ def run_horde(state):
         merged = "\n\n".join(f"[{nm}] {ans[:600]}" for nm, ans in candidates.items())
         # Judge ladder: primary judge, then alt_judge (horde config), then raw
         # candidate fallback. A 503-prone judge must never fault the whole job.
+        mem = state["fleet"].members
         judge_names = []
-        for cand in (judge, alt_judge):
-            if cand and cand in state["fleet"].members and \
-               state["fleet"].members[cand].enabled and cand not in judge_names:
+        # role-assigned judges follow the config overrides (judge, alt_judge)
+        role_j = [n for n in active_all
+                  if getattr(mem[n], "role", "worker") in ("judge", "alt_judge")]
+        role_j.sort(key=lambda n: mem[n].role != "judge")
+        for cand in [judge] + role_j + [alt_judge]:
+            if cand and cand in mem and mem[cand].enabled and cand not in judge_names:
                 judge_names.append(cand)
         if not judge_names:
             judge_names = [active[0]]
@@ -2526,7 +2554,8 @@ def main():
         final, status, details = run_solo(fleet, bb, problem, name)
         print(final)
     elif args.mode == "ensemble":
-        judge = args.judge or active[-1]
+        role_j = [n for n in active if getattr(members[n], "role", "worker") == "judge"]
+        judge = args.judge or (role_j[0] if role_j else active[-1])
         final, status, details = run_ensemble(fleet, bb, problem, active, judge)
         print(final)
     elif args.mode == "agent":

@@ -41,6 +41,14 @@ quiet = true               # suppress per-request debug output
 
 # Members are connect-only remote endpoints (koboldcpp / llama.cpp servers).
 # The url is the identity; the name is display + part of the horde model id.
+# Members are connect-only remote endpoints (koboldcpp / llama.cpp servers).
+# The url is the identity; the name is display + part of the horde model id.
+# role: worker   - generates answers (horde jobs + ensemble fan-out)
+#       judge    - only merges candidate answers, never generates
+#       alt_judge- backup judge, tried when the primary judge is busy/503
+#       planner  - leads the swarm-mode pipeline (ask --mode swarm)
+# Dedicated judges keep the generation fan-out free (faster submits) and avoid
+# the koboldcpp 503 self-collision of a judge that just generated.
 [[member]]
 name = "Hemmingway_Qwen-27B"
 url = "http://192.168.1.101:5001"
@@ -48,6 +56,7 @@ temperature = 0.7
 enabled = true
 reasoning = "auto"
 reasoning_style = "chat_template_kwargs"
+role = "judge"
 
 [[member]]
 name = "Xotron-V4_Qwen-27B"
@@ -64,6 +73,7 @@ temperature = 0.7
 enabled = true
 reasoning = "auto"
 reasoning_style = "chat_template_kwargs"
+role = "worker"
 
 [[member]]
 name = "NeoHorse_Qwen-9B"
