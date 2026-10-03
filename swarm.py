@@ -2313,7 +2313,14 @@ def run_horde(state):
         active = [n for n in active_all
                   if getattr(state["fleet"].members[n], "role", "worker") == "worker"] \
             or active_all
+        # Horde entries go to the dedicated horde blackboard, tagged with the
+        # job id so each job flushes only its own rows (concurrency-safe).
+        bbh = state.get("bb_horde")
+        job_tag = "horde:" + str(j.get("id"))
         candidates = {}
+        def flush_job():
+            if bbh:
+                bbh.delete_by_problem(job_tag)
         def raw_one(nm):
             try:
                 # per-member timeout: leave judge_reserve for the merge step
@@ -2321,7 +2328,10 @@ def run_horde(state):
                 ans = raw_complete(state["fleet"], nm, prompt, params=payload,
                                    max_length=job_max_length, min_p=min_p,
                                    temperature=temp, timeout=max(10, int(rem)))
-                return nm, (ans or "").strip() or None
+                out = (ans or "").strip() or None
+                if out and bbh:
+                    bbh.put("answer", nm, job_tag, out)
+                return nm, out
             except Exception:
                 return nm, None
         with ThreadPoolExecutor(max_workers=len(active)) as ex:
@@ -2335,6 +2345,7 @@ def run_horde(state):
         if time.time() > deadline - 10:
             # generation ate the budget; fault now rather than expire mid-judge
             fault(j, "deadline reached before merge")
+            flush_job()
             return
         merged = "\n\n".join(f"[{nm}] {ans[:600]}" for nm, ans in candidates.items())
         # Judge ladder: primary judge, then alt_judge (horde config), then raw
@@ -2364,6 +2375,7 @@ def run_horde(state):
         # while budget remains; every attempt is capped at the time actually left.
         final = None
         jerr = None
+        judge_used = None
         for jm in judge_names:
             for attempt in range(2):
                 rem = int(deadline - time.time())
@@ -2372,6 +2384,7 @@ def run_horde(state):
                 try:
                     final = chat(state["fleet"], jm, judge_msgs,
                                  temperature=0.4, timeout=rem)
+                    judge_used = jm
                     break
                 except urllib.error.HTTPError as e:
                     jerr = e
@@ -2400,6 +2413,7 @@ def run_horde(state):
             # model's reply earns kudos; a faulted job punishes us, and the
             # punish storm maintenance-flagged the worker on the master.
             final = max(candidates.values(), key=len)
+            judge_used = "(raw)"
             print(f"[horde] job {str(j.get('id'))[:8]} judge failed ({jerr}); "
                   f"submitting raw candidate", file=sys.stderr)
         if not final or not final.strip():
@@ -2412,7 +2426,12 @@ def run_horde(state):
             except Exception as e:
                 punish()
                 print(f"[horde] faulted submit failed: {e}", file=sys.stderr)
+            flush_job()
             return
+        # Judge output goes on the horde board right before it is sent out,
+        # so the board holds exactly one in-flight job's material per job.
+        if bbh and final and final.strip():
+            bbh.put("final", judge_used or "?", job_tag, final.strip())
         try:
             sub = api("POST", "/api/v2/generate/text/submit",
                       {"id": j.get("id"), "generation": final, "seed": 0})
@@ -2425,7 +2444,10 @@ def run_horde(state):
                 except Exception:
                     pass
             print(f"[horde] submit failed: {e} {body}", file=sys.stderr)
+            flush_job()
             return
+        # Sent to the requester: flush this job's entries from the horde board.
+        flush_job()
         reward = float(sub.get("reward", 1.0) or 0)
         with stats_lock:
             kudos_earned += reward
@@ -2527,7 +2549,16 @@ def main():
         if dropped:
             print(f"[blackboard] pruned {dropped} entries "
                   f"(retention {bb.retention_days:g} days)")
-        state = {"cfg": cfg, "fleet": fleet, "bb": bb, "toml_path": args.config}
+        # Separate horde-only board: horde jobs write here and flush per job,
+        # so external prompts never mix with the normal (serve) blackboard.
+        bb_horde = Blackboard(str(RUNTIME / "blackboard_horde.sqlite"),
+                              cfg.get("blackboard", {}))
+        dropped = bb_horde.prune()
+        if dropped:
+            print(f"[blackboard] horde board pruned {dropped} entries "
+                  f"(retention {bb_horde.retention_days:g} days)")
+        state = {"cfg": cfg, "fleet": fleet, "bb": bb, "bb_horde": bb_horde,
+                 "toml_path": args.config}
         if args.command == "serve":
             run_serve(state)
         else:

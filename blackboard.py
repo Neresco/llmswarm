@@ -76,6 +76,20 @@ class Blackboard:
             self.db.commit()
         return n
     
+    def delete_by_problem(self, problem):
+        """Delete all entries for one problem tag. Horde uses a per-job tag so
+        each job flushes only its own entries (concurrent jobs are safe)."""
+        with self.lock:
+            n = self.db.execute(
+                "SELECT count(*) FROM entries WHERE problem = ?", (problem,)
+            ).fetchone()[0]
+            self.db.execute("DELETE FROM entries WHERE problem = ?", (problem,))
+            if n:
+                self.db.execute(
+                    "INSERT INTO entries_fts(entries_fts) VALUES('rebuild')")
+            self.db.commit()
+        return n
+
     def tail(self, n=20):
         rows = self.db.execute(
             "SELECT kind, member, substr(content,1,200), datetime(ts,'unixepoch','localtime') "
