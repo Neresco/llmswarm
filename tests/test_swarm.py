@@ -81,6 +81,33 @@ def test_blackboard_prune():
         print("✓ test_blackboard_prune passed")
 
 
+def test_blackboard_per_job_flush():
+    """Horde flow: per-job tag write + flush, isolated from other jobs and boards."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        horde_db = os.path.join(tmpdir, "horde.db")
+        main_db = os.path.join(tmpdir, "main.db")
+        bbh = swarm.Blackboard(horde_db, {"retention_days": 0})
+        bbm = swarm.Blackboard(main_db, {"retention_days": 0})
+
+        tag_a, tag_b = "horde:111", "horde:222"
+        # job A and job B interleave; main board gets a serve entry
+        bbh.put("answer", "m1", tag_a, "answer A")
+        bbh.put("answer", "m2", tag_b, "answer B")
+        bbh.put("final", "judge", tag_a, "final A")
+        bbm.put("answer", "m1", "chat", "serve entry")
+
+        # flush only job A; job B and the main board survive
+        assert bbh.delete_by_problem(tag_a) == 2
+        rows = bbh.db.execute("SELECT problem FROM entries").fetchall()
+        assert rows == [(tag_b,)]
+        assert bbm.db.execute("SELECT count(*) FROM entries").fetchone()[0] == 1
+
+        # second flush is idempotent
+        assert bbh.delete_by_problem(tag_a) == 0
+
+        print("\u2713 test_blackboard_per_job_flush passed")
+
+
 def test_validate_config():
     """Test config validation."""
     # Valid config
@@ -240,6 +267,7 @@ if __name__ == "__main__":
     test_msg_text()
     test_blackboard()
     test_blackboard_prune()
+    test_blackboard_per_job_flush()
     test_validate_config()
     test_parse_subtasks()
     test_completion_messages()
