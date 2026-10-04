@@ -14,6 +14,94 @@ PASS_PARAMS = ("temperature", "max_tokens", "top_p", "presence_penalty",
                "genkey")
 
 
+# --- AI Horde text routing -------------------------------------------------
+# A horde member has no direct endpoint; it submits to the horde master
+# (async) and polls until a worker with the requested model produces output.
+
+def _horde_cfg(fleet):
+    hcfg = fleet.cfg.get("horde", {})
+    return hcfg.get("cluster", "").rstrip("/"), hcfg.get("api_key", "")
+
+
+def _messages_to_prompt(messages):
+    """Serialize chat messages into the flat prompt the horde text API expects."""
+    parts = []
+    for m in messages:
+        role = (m.get("role") or "user").upper()
+        content = m.get("content", "")
+        if isinstance(content, list):  # multi-part content -> text only
+            content = " ".join(
+                c.get("text", "") for c in content if isinstance(c, dict))
+        parts.append(f"{role}: {content}")
+    return "\n\n".join(parts)
+
+
+def horde_text_generate(cluster, api_key, model, prompt, max_length=2048,
+                        temperature=0.7, min_p=None, priority="relaxed",
+                        timeout=120, poll_interval=2.0):
+    """Submit a text job to the horde master and poll until it is ready.
+
+    AI Horde text API: POST /api/v2/generate/text/async returns an id, then
+    GET /api/v2/generate/text/status/{id} is polled for the generation. The
+    status path is /status/ -- /check/ 404s.
+
+    priority: relaxed (free, standard) | immediate/instant (spend kudos for a
+    faster queue position) | stall/slow/queue/undetermined (lower).
+    """
+    hdrs = {"apikey": api_key, "User-Agent": "LLMSwarm/1.0",
+            "Client-Agent": "llmswarm:1.0", "Content-Type": "application/json"}
+    params = {"models": [model], "max_length": int(max_length),
+              "temperature": temperature}
+    if min_p is not None:
+        params["min_p"] = min_p
+    body = {"prompt": prompt, "params": params, "priority": priority}
+    req = urllib.request.Request(cluster + "/api/v2/generate/text/async",
+                                 data=json.dumps(body).encode(), headers=hdrs,
+                                 method="POST")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        res = json.loads(r.read())
+    job_id = res.get("id")
+    if not job_id:
+        raise RuntimeError(f"horde async returned no id: {res}")
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        time.sleep(poll_interval)
+        creq = urllib.request.Request(
+            cluster + "/api/v2/generate/text/status/" + job_id,
+            headers={"apikey": api_key, "User-Agent": "LLMSwarm/1.0"})
+        with urllib.request.urlopen(creq, timeout=30) as r:
+            cres = json.loads(r.read())
+        if cres.get("faulted"):
+            raise RuntimeError(f"horde text job {job_id} faulted: {cres}")
+        gens = cres.get("generations") or []
+        if gens:
+            text = gens[0].get("text", "")
+            if text.strip():
+                return text
+    raise TimeoutError(f"horde text job {job_id} not ready within {timeout}s")
+
+
+def _horde_call(fleet, name, m, prompt, max_length, temperature, min_p, timeout):
+    """Route one member call through the horde master. Returns the text."""
+    cluster, api_key = _horde_cfg(fleet)
+    if not cluster or not api_key:
+        raise RuntimeError(
+            f"horde member {name} needs [horde] cluster and api_key in swarm.toml")
+    priority = fleet.cfg.get("horde", {}).get("priority", "relaxed")
+    t0 = time.time()
+    try:
+        text = horde_text_generate(cluster, api_key, m.horde_model, prompt,
+                                   max_length=max_length,
+                                   temperature=(m.temperature if m.temperature is not None
+                                               else temperature),
+                                   min_p=min_p, priority=priority, timeout=timeout)
+        log_member_call(name, time.time() - t0, True)
+        return text
+    except Exception:
+        log_member_call(name, time.time() - t0, False)
+        raise
+
+
 def completion_messages(req):
     """Convert an OpenAI text-completion prompt into chat messages."""
     prompt = req.get("prompt", "")
@@ -90,6 +178,11 @@ def healthy_members(fleet, active, use_cache=True):
     now = time.time()
     alive, stale = [], []
     for n in active:
+        if fleet.members[n].is_horde():
+            # horde-routed members are always considered available; they reach
+            # the master, not a direct endpoint, so there is nothing to probe.
+            alive.append(n)
+            continue
         hit = _health_cache.get(n) if use_cache else None
         if hit and now - hit[0] < HEALTH_TTL:
             if hit[1]:
@@ -150,6 +243,9 @@ def reasoning_fields(member):
 
 def chat(fleet, name, messages, temperature=0.7, max_tokens=2048, timeout=6000, params=None):
     m = fleet.members[name]
+    if m.is_horde():
+        return _horde_call(fleet, name, m, _messages_to_prompt(messages),
+                           max_tokens, temperature, None, timeout)
     member = fleet.members[name]
     # Prepend the member's system prompt when it is enabled and non-empty.
     # A copy is made so the caller's list is not mutated.
@@ -199,6 +295,9 @@ def raw_complete(fleet, name, prompt, params=None, max_length=200, temperature=1
     completions do not (reasoning models bury the answer in reasoning_content
     and return empty content)."""
     m = fleet.members[name]
+    if m.is_horde():
+        return _horde_call(fleet, name, m, prompt, max_length, temperature,
+                           min_p, timeout)
     body = {"prompt": prompt, "max_tokens": int(max_length), "temperature": temperature,
             "stream": False}
     if min_p is not None:
@@ -234,6 +333,13 @@ def raw_complete(fleet, name, prompt, params=None, max_length=200, temperature=1
 def chat_stream(fleet, name, messages, on_delta=None, temperature=0.7,
                 max_tokens=2048, timeout=6000, params=None):
     m = fleet.members[name]
+    if m.is_horde():
+        # The horde cannot stream; emit the whole answer once it is ready.
+        text = _horde_call(fleet, name, m, _messages_to_prompt(messages),
+                           max_tokens, temperature, None, timeout)
+        if on_delta and text:
+            on_delta(text)
+        return text
     # Prepend the member's system prompt when it is enabled and non-empty (copy to avoid mutating caller).
     if m.system_prompt_enabled and m.system_prompt:
         messages = [{"role": "system", "content": m.system_prompt}] + list(messages)
@@ -299,6 +405,11 @@ def chat_with_tools(fleet, name, messages, timeout=6000, params=None):
     """Like chat() but preserves tool_calls in the response.
     Returns (text, tool_calls) tuple."""
     m = fleet.members[name]
+    if m.is_horde():
+        # Horde text API has no tool support; plain generation, no tool_calls.
+        text = _horde_call(fleet, name, m, _messages_to_prompt(messages),
+                           2048, 0.7, None, timeout)
+        return text, []
     # Prepend the member's system prompt when it is enabled and non-empty (copy to avoid mutating caller).
     if m.system_prompt_enabled and m.system_prompt:
         messages = [{"role": "system", "content": m.system_prompt}] + list(messages)

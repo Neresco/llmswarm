@@ -8,6 +8,22 @@ from .fleet import Member
 
 VALID_ROLES = {"planner", "worker", "critic", "synth", "any", "judge"}
 
+# Curated list of text models known to run on the public AI Horde. There is no
+# public text-model roster endpoint (the image status lists image-only), so the
+# browse UI offers this list plus a free-text field. Kept here so the server
+# endpoint and tests share one source of truth.
+KNOWN_TEXT_MODELS = [
+    "Llama-3.1-8B", "Llama-3.1-70B", "Llama-3.1-405B",
+    "Llama-3.3-70B", "Llama-3.3-70B-Instruct",
+    "Ling-3.0-flash-abliterated-APEX-Quality",
+    "Mistral-7B", "Mistral-Nemo", "Mixtral-8x7B",
+    "Qwen-7B", "Qwen-14B", "Qwen-72B",
+    "Qwen2.5-7B-Instruct", "Qwen2.5-72B-Instruct",
+    "Gemma-2-9B", "Gemma-2-27B", "Gemma-3-27B",
+    "Fimbulvetr-11B-v2", "Hermes-2-Pro-Mistral-7B",
+    "Command-R", "WizardLM-2-8x22B",
+]
+
 
 def validate_config(cfg):
     """Validate swarm.toml structure. Returns list of warnings/errors."""
@@ -64,6 +80,14 @@ def validate_config(cfg):
         sp_on = m.get("system_prompt_enabled")
         if sp_on is not None and not isinstance(sp_on, bool):
             issues.append(f"WARNING: Member {name} system_prompt_enabled must be a boolean")
+
+        # Validate horde routing
+        ht = m.get("horde_type")
+        if ht is not None and ht not in ("", "text", "image"):
+            issues.append(f"WARNING: Member {name} has invalid horde_type: {ht} (valid: text, image)")
+        hm = m.get("horde_model")
+        if hm is not None and not isinstance(hm, str):
+            issues.append(f"WARNING: Member {name} horde_model must be a string")
     
     # Validate serve config
     serve = cfg.get("serve", {})
@@ -143,7 +167,7 @@ def serialize_toml(cfg, members_rows):
         lines.append("[horde]")
         for k in ("cluster", "api_key", "name_prefix", "worker_id", "poll_interval",
                   "max_length", "max_context_length", "concurrency",
-                  "job_timeout", "judge_reserve", "alt_judge"):
+                  "job_timeout", "judge_reserve", "alt_judge", "priority", "pop_models"):
             if hcfg.get(k) is not None:
                 v = hcfg[k]
                 lines.append(f"{k} = " + (toml_str(v) if isinstance(v, str) else str(v)))
@@ -164,6 +188,10 @@ def serialize_toml(cfg, members_rows):
             lines.append("system_prompt = " + toml_str(m["system_prompt"]))
         if m.get("system_prompt_enabled"):
             lines.append("system_prompt_enabled = " + ("true" if m["system_prompt_enabled"] else "false"))
+        if m.get("horde_type"):
+            lines.append("horde_type = " + toml_str(m["horde_type"]))
+        if m.get("horde_model"):
+            lines.append("horde_model = " + toml_str(m["horde_model"]))
     return "\n".join(lines) + "\n"
 
 
@@ -204,6 +232,8 @@ def norm_members(rows):
                     ("worker", "judge", "alt_judge", "planner") else "worker",
             "system_prompt": m.get("system_prompt", ""),
             "system_prompt_enabled": bool(m.get("system_prompt_enabled", False)),
+            "horde_type": m.get("horde_type") if m.get("horde_type") in ("text", "image") else "",
+            "horde_model": m.get("horde_model", "") if isinstance(m.get("horde_model"), str) else "",
         })
     return out
 
@@ -221,6 +251,8 @@ def members_public(fleet):
             "role": getattr(m, "role", "worker"),
             "system_prompt": getattr(m, "system_prompt", ""),
             "system_prompt_enabled": getattr(m, "system_prompt_enabled", False),
+            "horde_type": getattr(m, "horde_type", ""),
+            "horde_model": getattr(m, "horde_model", ""),
         })
     return rows
 

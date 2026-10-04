@@ -6,6 +6,7 @@ import signal
 import sys
 import threading
 import time
+import urllib.request
 import uuid
 
 from .agent import run_agent_swarm
@@ -207,6 +208,53 @@ def make_handler(state):
                     "serve": state["cfg"]["serve"],
                     "horde": state["cfg"].get("horde", {}),
                     "members": members_public(state["fleet"]),
+                }).encode())
+            elif self.path == "/api/horde_models":
+                # Live text-model roster proxied from the cluster (same query
+                # KoboldHordeOverseer uses). There is no public roster WITHOUT
+                # the type=text filter -- /api/v2/status/models alone returns
+                # image-only. Curated list is an offline fallback.
+                from .config import KNOWN_TEXT_MODELS
+                hcfg = state["cfg"].get("horde", {})
+                cluster = hcfg.get("cluster", "").rstrip("/")
+                # This machine's own horde worker registers under a derived
+                # name (name_prefix + enabled members) when it joins the
+                # cluster; expose it so the user can route to their own worker.
+                own = ""
+                if hcfg.get("pop_models", "named") == "named":
+                    own = hcfg.get("name_prefix", "Swarm_Test") + "/" + "_".join(
+                        n for n in state["fleet"].order
+                        if state["fleet"].members[n].enabled)
+                models, meta, source = [], {}, "curated"
+                if cluster:
+                    try:
+                        req = urllib.request.Request(
+                            cluster + "/api/v2/status/models?type=text&model_state=all",
+                            headers={"User-Agent": "LLMSwarm/1.0",
+                                      "Client-Agent": "llmswarm:1.0"})
+                        with urllib.request.urlopen(req, timeout=20) as r:
+                            data = json.loads(r.read())
+                        if isinstance(data, list):
+                            for e in data:
+                                nm = e.get("name", "")
+                                if nm:
+                                    models.append(nm)
+                                    meta[nm] = {"workers": e.get("count", 0),
+                                                "eta": e.get("eta", 0),
+                                                "performance": e.get("performance", 0)}
+                            if models:
+                                source = "live"
+                    except Exception:
+                        models = []
+                if not models:
+                    models = list(KNOWN_TEXT_MODELS)
+                self._send(200, json.dumps({
+                    "models": models,
+                    "meta": meta,
+                    "own_worker": own,
+                    "cluster": cluster,
+                    "has_key": bool(hcfg.get("api_key")),
+                    "source": source,
                 }).encode())
             elif self.path == "/health":
                 self._send(200, {"status": "ok"})
@@ -638,15 +686,18 @@ def make_handler(state):
             # restart needed only for process-bound changes: model/port/ctx
             # or member-set membership. roles/env changes are config-only.
             # restart needed only when LOCAL (managed) members change; edits
-            # to connect-only url members are live config
+            # to connect-only url members AND horde-routed members (master,
+            # no local process) are live config. Both are excluded here.
             old_key = sorted(
                 (m.name, m.model, m.port, m.ctx, m.device, m.rpc)
-                for name in fleet.order for m in [fleet.members[name]] if not m.url
+                for name in fleet.order for m in [fleet.members[name]]
+                if not m.url and not m.is_horde()
             )
             new_key = sorted(
                 (m["name"], m["model"], m["port"], m["ctx"],
                  m.get("device", ""), m.get("rpc", ""))
-                for m in new_members if not m.get("url")
+                for m in new_members
+                if not m.get("url") and not m.get("horde_model")
             )
             needs_restart = old_key != new_key
             scfg = body.get("serve", {})

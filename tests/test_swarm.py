@@ -263,6 +263,150 @@ def test_metrics_tracking():
     print("✓ test_metrics_tracking passed")
 
 
+class _FakeResp:
+    def __init__(self, data):
+        self._b = json.dumps(data).encode()
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+    def read(self):
+        return self._b
+
+
+def test_member_horde_fields():
+    """Horde members carry horde_type/horde_model, are not launched, no base."""
+    m = swarm.Member({"name": "h1", "horde_type": "text", "horde_model": "Llama-3.1-8B"}, "/bin/true")
+    assert m.is_horde() is True
+    assert m.is_external() is False
+    assert m.horde_type == "text"
+    assert m.horde_model == "Llama-3.1-8B"
+    assert m.base == ""  # horde-routed: no direct base
+    # invalid horde_type coerced to ""
+    m2 = swarm.Member({"name": "h2", "horde_type": "bogus", "horde_model": "X"}, "/bin/true")
+    assert m2.horde_type == ""
+    # non-str horde_model coerced to ""
+    m3 = swarm.Member({"name": "h3", "horde_model": 123}, "/bin/true")
+    assert m3.horde_model == ""
+    assert m3.is_horde() is False
+    print("\u2713 test_member_horde_fields passed")
+
+
+def test_config_horde_roundtrip():
+    """norm_members / serialize_toml / validate carry horde fields."""
+    rows = [{"name": "h1", "horde_type": "text", "horde_model": "Llama-3.1-8B", "enabled": True}]
+    normed = swarm.norm_members(rows)
+    assert normed[0]["horde_type"] == "text"
+    assert normed[0]["horde_model"] == "Llama-3.1-8B"
+    # serialize includes horde fields
+    toml = swarm.serialize_toml({"llama": {}, "serve": {}, "member": normed}, normed)
+    assert 'horde_type = "text"' in toml
+    assert 'horde_model = "Llama-3.1-8B"' in toml
+    # validation flags an invalid horde_type
+    issues = swarm.validate_config({"member": [{"name": "x", "horde_type": "bogus"}], "serve": {}})
+    assert any("horde_type" in i for i in issues)
+    print("\u2713 test_config_horde_roundtrip passed")
+
+
+def test_save_horde_member_roundtrip():
+    """Saving a config with a horde member serializes and reloads it intact."""
+    import tempfile, os
+    members = [
+        {"name": "ext", "url": "http://1.2.3.4:5002", "role": "worker",
+         "enabled": True, "reasoning": "auto", "reasoning_style": "chat_template_kwargs",
+         "system_prompt": "", "system_prompt_enabled": False,
+         "horde_type": "", "horde_model": ""},
+        {"name": "horde", "url": "", "role": "worker",
+         "enabled": True, "reasoning": "auto", "reasoning_style": "chat_template_kwargs",
+         "system_prompt": "", "system_prompt_enabled": False,
+         "horde_type": "text", "horde_model": "Swarm_Test/X"},
+    ]
+    cfg = {"llama": {"server_bin": "/bin/true"}, "serve": {"host": "127.0.0.1",
+           "port": 5100, "mode": "ensemble", "reasoning": "off"},
+           "member": members}
+    toml_text = swarm.serialize_toml(cfg, members)
+    fd, path = tempfile.mkstemp(suffix=".toml"); os.close(fd)
+    try:
+        open(path, "w").write(toml_text)
+        _, members2, _ = swarm.load_config(path)
+        assert members2["horde"].is_horde() is True
+        assert members2["horde"].horde_model == "Swarm_Test/X"
+        assert members2["horde"].url == ""
+        assert members2["ext"].is_external() is True
+    finally:
+        os.unlink(path)
+    print("\u2713 test_save_horde_member_roundtrip passed")
+
+
+def test_messages_to_prompt():
+    """chat messages serialize into the flat horde prompt."""
+    msgs = [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}]
+    p = client._messages_to_prompt(msgs)
+    assert "SYSTEM: be brief" in p
+    assert "USER: hi" in p
+    # multi-part content flattened to text
+    p2 = client._messages_to_prompt([{"role": "user", "content": [
+        {"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}])
+    assert "a b" in p2
+    print("\u2713 test_messages_to_prompt passed")
+
+
+def test_horde_text_generate():
+    """horde submit + poll loop returns the generation text (mocked urllib)."""
+    calls = {"n": 0}
+    def fake_urlopen(req, timeout=30):
+        url = req.full_url
+        if url.endswith("/async"):
+            return _FakeResp({"id": "job1", "kudos": 1.0})
+        if "/status/job1" in url:
+            calls["n"] += 1
+            if calls["n"] < 3:  # first two polls: still queued
+                return _FakeResp({"generations": []})
+            return _FakeResp({"generations": [{"text": "hello from horde"}]})
+        raise AssertionError("unexpected url " + url)
+    orig = client.urllib.request.urlopen
+    client.urllib.request.urlopen = fake_urlopen
+    try:
+        out = client.horde_text_generate("http://cluster", "key", "Llama-3.1-8B",
+                                         "prompt here", max_length=100,
+                                         timeout=5, poll_interval=0.01)
+        assert out == "hello from horde"
+        assert calls["n"] == 3
+    finally:
+        client.urllib.request.urlopen = orig
+    print("\u2713 test_horde_text_generate passed")
+
+
+def test_chat_routes_horde_member():
+    """chat() routes horde members through _horde_call, not direct HTTP."""
+    class M:
+        def __init__(self):
+            self.name = "h1"; self.horde_model = "Llama-3.1-8B"; self.horde_type = "text"
+            self.temperature = 0.7; self.system_prompt = ""; self.system_prompt_enabled = False
+            self.url = ""; self.host = ""
+        def is_horde(self):
+            return True
+        def is_external(self):
+            return False
+    class F:
+        def __init__(self):
+            self.members = {"h1": M()}
+            self.cfg = {"horde": {"cluster": "http://c", "api_key": "k"}}
+    got = {}
+    def fake_horde_call(fleet, name, m, prompt, max_length, temperature, min_p, timeout):
+        got["prompt"] = prompt
+        return "ROUTED"
+    orig = client._horde_call
+    client._horde_call = fake_horde_call
+    try:
+        out = client.chat(F(), "h1", [{"role": "user", "content": "hello"}])
+        assert out == "ROUTED"
+        assert got["prompt"] == "USER: hello"
+    finally:
+        client._horde_call = orig
+    print("\u2713 test_chat_routes_horde_member passed")
+
+
 if __name__ == "__main__":
     print("Running LLMSwarm tests...\n")
     
@@ -276,5 +420,11 @@ if __name__ == "__main__":
     test_reasoning_fields()
     test_validate_config_agent_mode()
     test_metrics_tracking()
+    test_member_horde_fields()
+    test_config_horde_roundtrip()
+    test_save_horde_member_roundtrip()
+    test_messages_to_prompt()
+    test_horde_text_generate()
+    test_chat_routes_horde_member()
     
     print("\n✓ All tests passed!")

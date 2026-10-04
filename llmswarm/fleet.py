@@ -70,16 +70,28 @@ class Member:
         # per-member system prompt (overrides the default worker/judge prompt)
         self.system_prompt = conf.get("system_prompt", "")
         self.system_prompt_enabled = bool(conf.get("system_prompt_enabled", False))
+        # horde-routed member: no url/host. When horde_model is set, generation
+        # is submitted to the AI Horde master (async + poll) instead of a direct
+        # endpoint. horde_type is "text" (this pass) or "image" (follow-up).
+        self.horde_type = conf.get("horde_type", "") if conf.get("horde_type") in ("text", "image") else ""
+        self.horde_model = conf.get("horde_model", "") if isinstance(conf.get("horde_model"), str) else ""
         self.proc = None
 
     def is_external(self):
         # connect-only: the supervisor never owns this process
         return bool(self.url)
 
+    def is_horde(self):
+        # horde-routed: the supervisor never owns this process either; requests
+        # go through the horde master, which picks a worker with the model.
+        return bool(self.horde_model)
+
     @property
     def base(self):
         if self.url:
             return self.url.rstrip("/")
+        if self.horde_model:
+            return ""  # horde-routed; no direct base (routing handled in client)
         if self.host:
             # host may be "user@1.2.3.4" for ssh; URLs need the bare ip
             host = self.host.rsplit("@", 1)[-1] if "@" in self.host else self.host
@@ -174,6 +186,9 @@ class Fleet:
             if not m.enabled:
                 print(f"[{name}] disabled -> skip")
                 continue
+            if m.is_horde():  # horde-routed: nothing local to launch
+                print(f"[{name}] horde -> model {m.horde_model} (routed via master)")
+                continue
             if m.is_external():  # external: assume already running
                 print(f"[{name}] external -> {m.base}")
                 continue
@@ -191,6 +206,8 @@ class Fleet:
             m = self.members[name]
             if not m.enabled:
                 continue
+            if m.is_horde():
+                continue  # no local process or direct /health to wait on
             if m.is_external():
                 ok = m.healthy(timeout=10)
                 if not ok:
@@ -207,7 +224,7 @@ class Fleet:
     def down(self):
         for name in self.order:
             m = self.members[name]
-            if m.is_external():
+            if m.is_external() or m.is_horde():
                 continue
             pid = self.running().get(name)
             if pid and _alive(pid):
@@ -222,5 +239,8 @@ class Fleet:
         pids = self.running()
         for name in self.order:
             m = self.members[name]
+            if m.is_horde():
+                print(f"[{name}] horde model={m.horde_model} roles={sorted(m.roles)}")
+                continue
             state = "external" if m.is_external() else ("up" if _alive(pids.get(name, -1)) else "down")
             print(f"[{name}] {state} {m.base} roles={sorted(m.roles)}")
