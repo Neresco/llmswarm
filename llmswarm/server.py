@@ -14,7 +14,7 @@ from .client import (PASS_PARAMS, chat_with_tools, completion_messages,
                      log_request_start, msg_text, set_request_id,
                      set_request_reasoning, set_serve_reasoning, _health_cache,
                      _member_latencies)
-from .config import members_public, norm_members, serialize_toml
+from .config import load_config, members_public, norm_members, serialize_toml
 from .fleet import Fleet, _alive
 from .swarm import JUDGE_CHAT_SYSTEM, run_ensemble_chat, run_solo, run_swarm
 from .ui import UI_HTML
