@@ -525,6 +525,10 @@ def make_handler(state):
                 else:
                     self._send(500, {"error": str(e)})
                 return
+            # Defensive: normalize a None final (e.g. an empty stream) to "" so
+            # usage/serialization below never sees None and crashes the handler.
+            if final is None:
+                final = ""
             resp = {
                 "id": "swarm-%d" % int(time.time()),
                 "object": "chat.completion",

@@ -67,6 +67,9 @@ class Member:
         self.reasoning = conf.get("reasoning", "auto")
         # which wire-format the endpoint uses to enable/disable thinking
         self.reasoning_style = conf.get("reasoning_style", "chat_template_kwargs")
+        # per-member system prompt (overrides the default worker/judge prompt)
+        self.system_prompt = conf.get("system_prompt", "")
+        self.system_prompt_enabled = bool(conf.get("system_prompt_enabled", False))
         self.proc = None
 
     def is_external(self):

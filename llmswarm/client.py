@@ -151,6 +151,10 @@ def reasoning_fields(member):
 def chat(fleet, name, messages, temperature=0.7, max_tokens=2048, timeout=6000, params=None):
     m = fleet.members[name]
     member = fleet.members[name]
+    # Prepend the member's system prompt when it is enabled and non-empty.
+    # A copy is made so the caller's list is not mutated.
+    if member.system_prompt_enabled and member.system_prompt:
+        messages = [{"role": "system", "content": member.system_prompt}] + list(messages)
     body = {
         "messages": messages,
         "temperature": member.temperature if member.temperature is not None else temperature,
@@ -229,9 +233,10 @@ def raw_complete(fleet, name, prompt, params=None, max_length=200, temperature=1
 
 def chat_stream(fleet, name, messages, on_delta=None, temperature=0.7,
                 max_tokens=2048, timeout=6000, params=None):
-    """Streaming chat with one member. Calls on_delta(text_piece) for each
-    content delta and returns the full text."""
     m = fleet.members[name]
+    # Prepend the member's system prompt when it is enabled and non-empty (copy to avoid mutating caller).
+    if m.system_prompt_enabled and m.system_prompt:
+        messages = [{"role": "system", "content": m.system_prompt}] + list(messages)
     body = {
         "messages": messages,
         "temperature": m.temperature if m.temperature is not None else temperature,
@@ -294,6 +299,9 @@ def chat_with_tools(fleet, name, messages, timeout=6000, params=None):
     """Like chat() but preserves tool_calls in the response.
     Returns (text, tool_calls) tuple."""
     m = fleet.members[name]
+    # Prepend the member's system prompt when it is enabled and non-empty (copy to avoid mutating caller).
+    if m.system_prompt_enabled and m.system_prompt:
+        messages = [{"role": "system", "content": m.system_prompt}] + list(messages)
     body = {
         "messages": messages,
         "temperature": m.temperature if m.temperature is not None else 0.7,

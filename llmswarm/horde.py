@@ -14,6 +14,14 @@ from .client import chat, raw_complete
 from .server import _make_server
 
 
+def _fmt_uptime(seconds):
+    """Format a duration in seconds as HH:MM:SS."""
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
 def run_horde(state):
     """Worker mode: poll an external horde cluster, process jobs locally, submit back.
     The endpoints stay; requests are marked HORDEREQ_<random> to distinguish them."""
@@ -43,8 +51,12 @@ def run_horde(state):
     judge = scfg.get("judge")
     alt_judge = hcfg.get("alt_judge", "")
 
-    state["horde_stats"] = {"jobs": 0, "kudos_earned": 0.0, "kudos_paid": 0.0,
-                            "tokens_in": 0, "tokens_out": 0, "started": time.time()}
+    state["horde_stats"] = {"jobs": 0, "kudos_earned": 0.0, "kudos_last": 0.0,
+                            "kudos_avg_per_job": 0.0, "kudos_paid": 0.0,
+                            "tokens_in": 0, "tokens_out": 0, "total_chars": 0,
+                            "uptime_s": 0.0, "uptime_human": "00:00:00",
+                            "avg_job_time_s": 0.0, "last_job": None,
+                            "started": time.time()}
     server = _make_server(state)[0]
 
     def _stop(signum, frame):
@@ -121,6 +133,7 @@ def run_horde(state):
                 in_flight -= 1
 
     def _process_job(j):
+        nonlocal kudos_earned, jobs_done
         payload = j["payload"] if isinstance(j.get("payload"), dict) else {}
         prompt = payload.get("prompt") or j.get("prompt", "")
         if not prompt:
@@ -274,16 +287,44 @@ def run_horde(state):
         # Sent to the requester: flush this job's entries from the horde board.
         flush_job()
         reward = float(sub.get("reward", 1.0) or 0)
+        elapsed = time.time() - t_job
         with stats_lock:
             kudos_earned += reward
             jobs_done += 1
+            prev = state.get("horde_stats") or {}
+            total_chars = prev.get("total_chars", 0) + len(final or "")
+            total_job_time = prev.get("total_job_time", 0.0) + elapsed
+            uptime = time.time() - session_start
+            avg_kudos = kudos_earned / jobs_done if jobs_done else 0.0
+            avg_time = total_job_time / jobs_done if jobs_done else 0.0
             state["horde_stats"] = {
-                "jobs": jobs_done, "kudos_earned": round(kudos_earned, 1),
-                "kudos_paid": 0.0, "tokens_in": 0, "tokens_out": 0,
-                "started": session_start}
-        elapsed = time.time() - t_job
-        print(f"[horde] job {str(j.get('id'))[:8]}: {elapsed:.1f}s, gen {len(final)} chars, "
-              f"members {len(candidates)}, +{reward:.2f} kudos (total {kudos_earned:.1f})",
+                "jobs": jobs_done,
+                "kudos_earned": round(kudos_earned, 2),
+                "kudos_last": round(reward, 2),
+                "kudos_avg_per_job": round(avg_kudos, 2),
+                "kudos_paid": prev.get("kudos_paid", 0.0),
+                "tokens_in": prev.get("tokens_in", 0),
+                "tokens_out": prev.get("tokens_out", 0),
+                "total_chars": total_chars,
+                "uptime_s": round(uptime, 1),
+                "uptime_human": _fmt_uptime(uptime),
+                "avg_job_time_s": round(avg_time, 1),
+                "total_job_time": total_job_time,
+                "last_job": {
+                    "id": str(j.get("id") or ""),
+                    "kudos": round(reward, 2),
+                    "elapsed_s": round(elapsed, 1),
+                    "chars": len(final or ""),
+                    "members": len(candidates),
+                    "judge": judge_used,
+                },
+                "started": session_start,
+            }
+        print(f"[horde] job {str(j.get('id'))[:8]}: +{reward:.2f} kudos "
+              f"| session {kudos_earned:.2f} kudos over {jobs_done} jobs "
+              f"({avg_kudos:.2f}/job) | uptime {_fmt_uptime(uptime)} | "
+              f"{elapsed:.1f}s, {len(final or '')} chars, {len(candidates)} members, "
+              f"judge={judge_used}",
               file=sys.stderr)
 
     concurrency = max(1, int(hcfg.get("concurrency", 0)))

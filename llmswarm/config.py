@@ -56,6 +56,14 @@ def validate_config(cfg):
         temp = m.get("temperature")
         if temp is not None and not (0 <= temp <= 2.0):
             issues.append(f"WARNING: Member {name} has temperature {temp} outside typical range 0-2")
+
+        # Validate system_prompt
+        sp = m.get("system_prompt")
+        if sp is not None and not isinstance(sp, str):
+            issues.append(f"WARNING: Member {name} system_prompt must be a string")
+        sp_on = m.get("system_prompt_enabled")
+        if sp_on is not None and not isinstance(sp_on, bool):
+            issues.append(f"WARNING: Member {name} system_prompt_enabled must be a boolean")
     
     # Validate serve config
     serve = cfg.get("serve", {})
@@ -152,6 +160,10 @@ def serialize_toml(cfg, members_rows):
         lines.append("reasoning = " + toml_str(m.get("reasoning", "auto")))
         lines.append("reasoning_style = " + toml_str(m.get("reasoning_style", "chat_template_kwargs")))
         lines.append("role = " + toml_str(m.get("role", "worker")))
+        if m.get("system_prompt"):
+            lines.append("system_prompt = " + toml_str(m["system_prompt"]))
+        if m.get("system_prompt_enabled"):
+            lines.append("system_prompt_enabled = " + ("true" if m["system_prompt_enabled"] else "false"))
     return "\n".join(lines) + "\n"
 
 
@@ -190,6 +202,8 @@ def norm_members(rows):
                 else "chat_template_kwargs",
             "role": m.get("role") if m.get("role") in
                     ("worker", "judge", "alt_judge", "planner") else "worker",
+            "system_prompt": m.get("system_prompt", ""),
+            "system_prompt_enabled": bool(m.get("system_prompt_enabled", False)),
         })
     return out
 
@@ -205,6 +219,8 @@ def members_public(fleet):
             "reasoning_style": getattr(m, "reasoning_style", "chat_template_kwargs"),
             "enabled": m.enabled,
             "role": getattr(m, "role", "worker"),
+            "system_prompt": getattr(m, "system_prompt", ""),
+            "system_prompt_enabled": getattr(m, "system_prompt_enabled", False),
         })
     return rows
 
