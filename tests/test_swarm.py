@@ -11,8 +11,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE))
 
-# Import swarm module
-import swarm
+# Import the package (implementation now lives in the llmswarm/ package).
+# `client` holds the mutable per-member metrics state the tests assert on.
+import llmswarm as swarm
+from llmswarm import client
 
 
 def test_msg_text():
@@ -250,13 +252,13 @@ def test_validate_config_agent_mode():
 
 def test_metrics_tracking():
     """Test that member latency tracking works."""
-    # Simulate calls
-    swarm._member_latencies = {}
+    # Simulate calls (metrics state lives in the client module)
+    client._member_latencies = {}
     swarm.log_member_call("test", 1.5, True)
     swarm.log_member_call("test", 2.5, False)
-    
-    assert "test" in swarm._member_latencies
-    assert len(swarm._member_latencies["test"]) == 2
+
+    assert "test" in client._member_latencies
+    assert len(client._member_latencies["test"]) == 2
     
     print("✓ test_metrics_tracking passed")
 

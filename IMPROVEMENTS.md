@@ -1,6 +1,6 @@
 # LLMSwarm Improvement Proposals
 
-Last updated: 2026-09-27
+Last updated: 2026-10-04
 
 ## Status Legend
 - [x] Implemented
@@ -98,13 +98,22 @@ Last updated: 2026-09-27
 ## Low Priority
 
 ### 9. Code Modularization
-- [x] **Status**: Implemented (2026-09-27)
-- **Issue**: Single 1000+ line file mixed HTTP server, fleet management, swarm logic, UI.
-- **Fix**: Extracted to separate modules:
-  - `blackboard.py` — Blackboard class (SQLite + FTS5)
-  - `fleet.py` — Member, Fleet classes (process management)
-  - `swarm.py` — Main entry point, HTTP server, swarm logic, UI
-- **Note**: Full modularization (swarm_logic.py, server.py, ui.py) deferred — current split covers the most complex components
+- [x] **Status**: Implemented (2026-09-27), completed (2026-10-04)
+- **Issue**: Single 2600+ line `swarm.py` mixed HTTP server, fleet management, swarm logic and UI — and even re-declared `Member`/`Fleet`/`_alive` that shadowed the standalone `fleet.py`, plus a dead `_BlackboardDeprecated` class.
+- **Fix**: Split into a `llmswarm/` package, one file per concern:
+  - `config.py` — load/validate/serialize `swarm.toml`
+  - `fleet.py` — `Member` + `Fleet` (process management)
+  - `blackboard.py` — SQLite + FTS5 knowledge store
+  - `client.py` — per-member chat calls, retry, streaming, tools, health gate, reasoning control, request logging
+  - `swarm.py` — ensemble / swarm / solo modes + prompt constants
+  - `agent.py` — tool-using agent mode
+  - `ui.py` — web UI HTML
+  - `server.py` — HTTP handler + OpenAI-compatible routes
+  - `serve.py` — serve runner (graceful shutdown)
+  - `horde.py` — AI-Horde worker runner
+  - `cli.py` — `main()` argument handling
+- Root `swarm.py` is now a 17-line shim so `python3 swarm.py serve|horde|...` keeps working. The duplicated root `fleet.py`/`blackboard.py` were removed; the merged `Member` in `llmswarm/fleet.py` carries both `role` and `reasoning`/`reasoning_style` (the old shadowing copy lost per-member reasoning config).
+- **Note**: Full modularization complete — no deferred items remain.
 
 ### 10. Structured Logging
 - [x] **Status**: Implemented (2026-09-27)
@@ -125,12 +134,13 @@ Last updated: 2026-09-27
 - **Example**: `curl http://localhost:5100/api/metrics`
 
 ### 12. Graceful Shutdown
-- [x] **Status**: Implemented (2026-09-27)
-- **Issue**: SIGTERM kills in-flight requests.
-- **Fix**: Added signal handlers for SIGTERM and SIGINT:
-  - Catches signal, logs "shutting down gracefully"
-  - Calls `server.shutdown()` to wait for in-flight requests
-  - Closes server socket in finally block
+- [x] **Status**: Implemented (2026-09-27), Ctrl+C deadlock fixed (2026-10-04)
+- **Issue**: SIGTERM killed in-flight requests; a later version deadlocked on Ctrl+C (had to kill the terminal).
+- **Root cause of the deadlock**: `serve_forever()` runs on the main thread and the signal handler also runs on the main thread, so calling `server.shutdown()` from the handler blocked forever waiting for the loop it had itself preempted.
+- **Fix** (`llmswarm/serve.py`): the handler now requests the stop from a **side thread** (`threading.Thread(target=server.shutdown, daemon=True)`), so the main `serve_forever()` loop notices the flag and returns; the socket is closed in a finally block.
+  - The in-flight request thread is a daemon so a live request can't hold the process open after the loop stops.
+  - `horde.py` closes the HTTP server then `os._exit(0)`, because its `ThreadPoolExecutor` job threads are non-daemon and would otherwise wait for in-flight jobs at interpreter shutdown.
+- **Verified**: single and rapid double Ctrl+C both return to the prompt in ~1s.
 
 ### 13. Test Suite
 - [x] **Status**: Implemented (2026-09-27)
@@ -314,6 +324,24 @@ An enabled member whose endpoint silently swallows packets (dropped SYNs) used t
 
 ---
 
+## Loopback-only UI (management vs. shared API)
+
+The web UI (`/`, `/ui`) and the management routes (`/api/*`) are now reachable
+**only from loopback** (127.0.0.1 / ::1). This keeps the admin interface private
+while still letting you share a link for the swarm's OpenAI-compatible API:
+
+- `server.py` adds `_local_only_blocked()`, checked at the top of `do_GET` and
+  `do_POST`. It inspects the peer's source IP (`self.client_address[0]`) and
+  returns 403 for non-loopback clients on `/`, `/ui`, and any `/api/...` route.
+- Open to the network: `/v1/chat/completions`, `/v1/completions`, `/completions`,
+  `/v1/models`, `/health`.
+- `/api/config` exposes the horde `api_key`, so restricting `/api/*` to loopback
+  also closes that leak.
+- Share `http://<host>:5100/v1/completions` for SillyTavern / other clients;
+  open `http://127.0.0.1:5100/ui` only on the swarm host itself.
+- Verified: LAN client gets 200 on `/v1/models` + `/health` but 403 on `/ui`,
+  `/`, `/api/config`, `POST /api/save` and `POST /v1/completions`.
+
 ## Summary
 
 | Priority | Total | Done | Remaining |
@@ -335,10 +363,11 @@ An enabled member whose endpoint silently swallows packets (dropped SYNs) used t
 - Request timeout with HTTP 504
 - BM25 + recency recall scoring
 - Tool-call passthrough
-- Code modularization (blackboard.py, fleet.py)
+- Full package modularization (llmswarm/ — config, fleet, client, swarm, agent, server, serve, horde, ui, cli)
 - Structured logging with request IDs
 - Metrics endpoint (/api/metrics)
-- Graceful shutdown (SIGTERM)
+- Graceful shutdown (SIGTERM) + Ctrl+C deadlock fix
+- Loopback-only UI (management routes private, OpenAI API shared)
 - Test suite (tests/test_swarm.py)
 - Configuration validation
 

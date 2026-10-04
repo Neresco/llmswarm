@@ -23,8 +23,12 @@ python3 swarm.py horde               # AI-Horde worker: poll cluster, submit res
 python3 swarm.py down
 ```
 
-The local web UI is always at `http://<host>:5100/ui`; raw config at
-`/api/config`, stats at `/api/stats` and `/api/horde_stats`.
+The web UI is at `http://127.0.0.1:5100/ui` and is reachable **only from the
+local host** (loopback): the UI and all `/api/*` management routes return 403
+for remote clients, while the OpenAI-compatible API (`/v1/chat/completions`,
+`/v1/completions`, `/v1/models`, `/health`) stays open so you can share a link.
+Raw config at `/api/config` (loopback); stats at `/api/stats` and
+`/api/horde_stats` (loopback).
 
 ## Serving chat UIs (SillyTavern)
 
@@ -222,10 +226,22 @@ role `alt_judge` -> `horde.alt_judge` -> longest raw worker answer.
 
 ## Layout
 
-- `swarm.py` - the whole supervisor
+- `swarm.py` - entry-point shim; `python3 swarm.py ...` re-exports the package API
+- `llmswarm/` - the supervisor, one file per concern:
+  - `config.py` - load / validate / serialize `swarm.toml`
+  - `fleet.py` - `Member` + `Fleet` (process management)
+  - `blackboard.py` - SQLite + FTS5 knowledge store
+  - `client.py` - per-member chat calls, retry, streaming, tools, health gate, reasoning, request logging
+  - `swarm.py` - ensemble / swarm / solo modes + prompt constants
+  - `agent.py` - tool-using agent mode
+  - `ui.py` - web UI HTML
+  - `server.py` - HTTP handler + OpenAI-compatible routes
+  - `serve.py` - serve runner (graceful shutdown)
+  - `horde.py` - AI-Horde worker runner
+  - `cli.py` - `main()` argument handling
 - `swarm.toml` - fleet definition (local-only, gitignored; create from `example.llswarm.toml`)
 - `example.llswarm.toml` - full example config, no secrets
-- `models/` - symlinks or copies of GGUFs used by the fleet
+- `tests/` - test suite (`python3 tests/test_swarm.py`)
 - `.swarm/` - runtime: `pids.json`, `blackboard.sqlite`, `<member>.log`
 
 ## Caveats
