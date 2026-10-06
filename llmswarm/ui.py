@@ -62,6 +62,11 @@ Port/host changes need a full supervisor restart.</small></p>
 <textarea id=jprompt rows=3></textarea></div>
 <div class=field><label>Serve port (full restart)</label><input id=port size=6></div>
 <div class=field><label>Member timeout s (0=off, ensemble)</label><input id=member_timeout size=6></div>
+<div class=field><label><input type=checkbox id=spread_roles> Spread swarm roles across members (planner/critic/synth on distinct members, swarm mode)</label></div>
+<div class=field><label>Swarm planner (pin)</label><select id=swarm_planner></select></div>
+<div class=field><label>Swarm critic (pin)</label><select id=swarm_critic></select></div>
+<div class=field><label>Swarm synth (pin)</label><select id=swarm_synth></select>
+<div style="color:#777;font-size:12px;margin-top:4px">"auto" = role pool with rotation/spread. Pinning a member disables rotation for that role (swarm mode).</div></div>
 <p><button id=save>Save &amp; Apply</button><span id=status></span></p>
 <h3>Last Request Details</h3>
 <button onclick=showDetails()>Show Member Outputs</button>
@@ -136,6 +141,12 @@ async function loadCfg(){
   document.getElementById('reasoning').value=cfg.serve.reasoning||'off';
   document.getElementById('port').value=cfg.serve.port;
   document.getElementById('member_timeout').value=cfg.serve.member_timeout??0;
+  document.getElementById('spread_roles').checked=!!cfg.serve.spread_roles;
+  fillSwarmRoleSels();
+  ['swarm_planner','swarm_critic','swarm_synth'].forEach(id=>{
+    const s=document.getElementById(id), v=cfg.serve[id];
+    if(v && [...s.options].some(o=>o.value===v)) s.value=v;
+  });
   document.getElementById('horde_priority').value=(cfg.horde&&cfg.horde.priority)||'relaxed';
 }
 const MODE_HELP={
@@ -182,6 +193,22 @@ function addMember(){
   appendRow(d);
   d._fields.name.focus();
 }
+function fillSwarmRoleSels(){
+  ['swarm_planner','swarm_critic','swarm_synth'].forEach(id=>{
+    const s=document.getElementById(id);
+    const cur=s.value;
+    s.innerHTML='';
+    const a=document.createElement('option');
+    a.value=''; a.textContent='auto';
+    s.appendChild(a);
+    [...document.querySelectorAll('#members .mrow')].forEach(r=>{
+      const o=document.createElement('option');
+      o.value=r._fields.name.value.trim(); o.textContent=o.value||'(unnamed)';
+      s.appendChild(o);
+    });
+    s.value=(cur && [...s.options].some(o=>o.value===cur)) ? cur : '';
+  });
+}
 function syncJudgeOptions(){
   const jSel=document.getElementById('judge');
   // keep judge options in sync with remaining members
@@ -191,6 +218,7 @@ function syncJudgeOptions(){
     o.value=r._fields.name.value.trim(); o.textContent=o.value||'(unnamed)';
     jSel.appendChild(o);
   });
+  fillSwarmRoleSels();
 }
 function removeMember(d){
   if(d._spsec && d._spsec.parentNode) d._spsec.remove();
@@ -274,7 +302,11 @@ function collect(){
                  judge:document.getElementById('judge').value,
                  judge_prompt:document.getElementById('jprompt').value,
                  port:+document.getElementById('port').value,
-                 member_timeout:+document.getElementById('member_timeout').value||0},
+                 member_timeout:+document.getElementById('member_timeout').value||0,
+                 spread_roles:document.getElementById('spread_roles').checked,
+                 swarm_planner:document.getElementById('swarm_planner').value,
+                 swarm_critic:document.getElementById('swarm_critic').value,
+                 swarm_synth:document.getElementById('swarm_synth').value},
           horde:{priority:document.getElementById('horde_priority').value},
           members};
 }

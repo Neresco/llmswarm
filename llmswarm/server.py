@@ -323,6 +323,9 @@ def make_handler(state):
                 pass
             
             scfg = state["cfg"]["serve"]
+            # Explicit swarm role pins (serve config); empty = auto-assign
+            swarm_roles = {k: scfg[f"swarm_{k}"] for k in ("planner", "critic", "synth")
+                           if scfg.get(f"swarm_{k}")}
             # Reasoning control: serve default, overridable per request
             set_serve_reasoning(scfg.get("reasoning", "off"))
             set_request_reasoning(req.get("reasoning"))
@@ -500,8 +503,9 @@ def make_handler(state):
                                 stream_cb=stream_cb)
                         elif scfg.get("mode", "ensemble") == "swarm":
                             result_container['final'], result_container['status'], result_container['details'] = run_swarm(
-                                state["fleet"], state["bb"], problem, active, {}, history=messages,
-                                stream_cb=stream_cb)
+                                state["fleet"], state["bb"], problem, active, swarm_roles, history=messages,
+                                stream_cb=stream_cb,
+                                spread=bool(scfg.get("spread_roles", False)))
                         elif use_fast_path:
                             result_container['final'], result_container['status'], result_container['details'] = run_solo(
                                 state["fleet"], state["bb"], problem, active[0],
@@ -547,8 +551,9 @@ def make_handler(state):
                             stream_cb=stream_cb)
                     elif scfg.get("mode", "ensemble") == "swarm":
                         final, member_status, member_details = run_swarm(state["fleet"], state["bb"], problem,
-                                          active, {}, history=messages,
-                                          stream_cb=stream_cb)
+                                          active, swarm_roles, history=messages,
+                                          stream_cb=stream_cb,
+                                          spread=bool(scfg.get("spread_roles", False)))
                     elif use_fast_path:
                         fast_member = active[0]
                         final, member_status, member_details = run_solo(state["fleet"], state["bb"], problem, fast_member,

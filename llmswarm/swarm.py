@@ -1,4 +1,5 @@
 """Swarm modes: ensemble, swarm (plan/work/critique/synth) and solo."""
+import itertools
 import json
 from concurrent.futures import ThreadPoolExecutor
 
@@ -30,28 +31,70 @@ SYNTH_SYSTEM = (
 )
 
 
-def parse_subtasks(text):
+def try_parse_subtasks(text):
+    """Return the subtask list from planner output, or None if unusable."""
+    if not text or not text.strip():
+        return None
     try:
         s = text[text.index("{"): text.rindex("}") + 1]
         data = json.loads(s)
-        return [t for t in data.get("subtasks", []) if t.get("task")]
+        if isinstance(data, list):
+            data = {"subtasks": data}
+        tasks = [t for t in data.get("subtasks", []) if t.get("task")]
+        return tasks or None
     except Exception:
-        return [{"title": "solve", "task": "answer the question directly"}] if text.strip() else []
+        return None
 
 
-def run_swarm(fleet, bb, problem, member_names, roles, history=None, stream_cb=None):
-    def pick(role):
-        for n in member_names:
-            if role in fleet.members[n].roles:
-                return n
-        for n in member_names:
-            if "any" in fleet.members[n].roles:
-                return n
-        return member_names[0]
+def parse_subtasks(text):
+    tasks = try_parse_subtasks(text)
+    if tasks is not None:
+        return tasks
+    return [{"title": "solve", "task": "answer the question directly"}] if text.strip() else []
 
-    planner = roles.get("planner") or pick("planner")
-    critic = roles.get("critic") or pick("critic")
-    synth = roles.get("synth") or pick("synth")
+
+# Per-request rotation offset for role assignment (itertools.count.next is
+# thread-safe in CPython).
+_role_offset = itertools.count()
+
+
+def run_swarm(fleet, bb, problem, member_names, roles, history=None, stream_cb=None,
+              spread=False):
+    def eligible(role):
+        pool = [n for n in member_names if role in fleet.members[n].roles]
+        if not pool:
+            pool = [n for n in member_names if "any" in fleet.members[n].roles]
+        return pool or list(member_names)
+
+    # Rotate role assignment once per request so the roles are spread across
+    # members over time instead of always landing on the first match.
+    off = next(_role_offset)
+
+    def rotated(pool):
+        if len(pool) <= 1:
+            return pool
+        k = off % len(pool)
+        return pool[k:] + pool[:k]
+
+    # Explicit role pins (serve config) win over rotation and spread.
+    taken = set()
+
+    def assign(role):
+        n = roles.get(role)
+        if not n:
+            pool = rotated(eligible(role))
+            if spread:
+                # distinct members when possible so the orchestration roles
+                # are not all concentrated on one model
+                n = next((x for x in pool if x not in taken), pool[0])
+            else:
+                n = pool[0]
+        taken.add(n)
+        return n
+
+    planner = assign("planner")
+    critic = assign("critic")
+    synth = assign("synth")
 
     context = bb.recall(problem)
     ctx_blob = "\n".join(context) if context else "(empty)"
@@ -61,55 +104,90 @@ def run_swarm(fleet, bb, problem, member_names, roles, history=None, stream_cb=N
         history_text = "(no history)"
     failed = []
     print(f"== plan ({planner}) ==")
-    try:
-        plan_text = chat_with_retry(fleet, planner, [
-            {"role": "system", "content": PLANNER_SYSTEM},
-            {"role": "user", "content": f"Conversation history:\n{history_text}\n\nBlackboard context:\n{ctx_blob}\n\nProblem: {problem}"},
-        ], temperature=0.2)
-        subtasks = parse_subtasks(plan_text)
-        bb.put("plan", planner, problem, plan_text)
-    except Exception as e:
-        # Planner failure must not kill the request: fall back to a single direct task
-        print(f"-- planner {planner} failed ({e}); falling back to direct answer")
-        failed.append(planner)
-        subtasks = [{"title": "direct", "task": problem}]
+    # Try the chosen planner first, then fall through to the next members if
+    # the call fails or returns nothing. Cap at 3 attempts to bound latency.
+    plan_pool = [planner] + [n for n in member_names if n != planner]
+    subtasks = None
+    draft_direct = None  # (member, text): planner wrote the answer, not a plan
+    for p in plan_pool[:3]:
+        try:
+            plan_text = chat_with_retry(fleet, p, [
+                {"role": "system", "content": PLANNER_SYSTEM},
+                {"role": "user", "content": f"Conversation history:\n{history_text}\n\nBlackboard context:\n{ctx_blob}\n\nProblem: {problem}"},
+            ], temperature=0.2)
+        except Exception as e:
+            print(f"-- planner {p} failed ({e}); trying next member")
+            failed.append(p)
+            continue
+        tasks = try_parse_subtasks(plan_text)
+        if tasks:
+            planner = p
+            subtasks = tasks
+            bb.put("plan", p, problem, plan_text)
+            break
+        if plan_text.strip():
+            # The model wrote the answer instead of a plan (common for
+            # roleplay traffic): reuse it as the draft and skip the workers.
+            draft_direct = (p, plan_text)
+            print(f"-- planner {p} wrote prose instead of a plan "
+                  f"(raw: {plan_text[:200]!r}); using it as the draft")
+            break
+        print(f"-- planner {p} returned empty output; trying next member")
+    if subtasks is None and draft_direct:
+        planner, plan_text = draft_direct
+        subtasks = [{"title": "draft", "task": problem}]
+        bb.put("result", planner, problem, plan_text)
+        results = [(0, planner, plan_text)]
+        print("-- skipping worker phase; critique + synthesize refine the draft")
+    else:
+        if subtasks is None:
+            # No planner produced a usable plan: fall back to a single direct task
+            print("-- no usable plan; falling back to direct answer")
+            subtasks = [{"title": "direct", "task": problem}]
+
+        workers = [n for n in member_names if n not in (planner,)] or member_names
+        if len(subtasks) == 1 and len(workers) > 1:
+            # Single subtask (planner trivial/fallback): fan it out to every
+            # worker so the swarm still answers with independent views.
+            jobs = [(0, subtasks[0], w) for w in workers]
+        else:
+            jobs = [(i, st, workers[i % len(workers)]) for i, st in enumerate(subtasks)]
+        results = [None] * len(jobs)
+        print(f"== work ({len(subtasks)} subtask(s), {len(jobs)} job(s) on {len(workers)} workers) ==")
+
+        def do(i, st, w):
+            ctx = bb.recall(st.get("task", problem))
+            msgs = [
+                {"role": "system", "content": WORKER_SYSTEM},
+                {"role": "user", "content": "Problem: " + problem +
+                 "\nYour subtask: " + st.get("task", "") +
+                 "\nBlackboard:\n" + ("\n".join(ctx) if ctx else "(none)")},
+            ]
+            ans = chat_with_retry(fleet, w, msgs)
+            bb.put("result", w, problem, ans)
+            return w, ans
+
+        with ThreadPoolExecutor(max_workers=min(8, len(jobs) + 1)) as ex:
+            futs = {ex.submit(do, i, st, w): j for j, (i, st, w) in enumerate(jobs)}
+            for f in futs:
+                j = futs[f]
+                i, st, w = jobs[j]
+                try:
+                    w, ans = f.result()
+                except Exception as e:
+                    print(f"-- subtask {i} ({w}) failed: {e}")
+                    failed.append(st.get("title", f"subtask-{i}"))
+                    continue
+                results[j] = (i, w, ans)
+                print(f"-- [{w}] {st.get('title','subtask')}: {ans[:200]}...")
+        if not any(results):
+            raise RuntimeError("all subtask workers failed")
+
     print(json.dumps(subtasks, indent=1)[:800])
-
-    workers = [n for n in member_names if n not in (planner,)] or member_names
-    results = [None] * len(subtasks)
-    print(f"== work ({len(subtasks)} subtasks, parallel on {len(workers)}+ members) ==")
-
-    def do(i, st):
-        w = workers[i % len(workers)] if len(workers) > 1 else pick("worker")
-        ctx = bb.recall(st.get("task", problem))
-        msgs = [
-            {"role": "system", "content": WORKER_SYSTEM},
-            {"role": "user", "content": "Problem: " + problem +
-             "\nYour subtask: " + st.get("task", "") +
-             "\nBlackboard:\n" + ("\n".join(ctx) if ctx else "(none)")},
-        ]
-        ans = chat_with_retry(fleet, w, msgs)
-        bb.put("result", w, problem, ans)
-        return w, ans
-
-    with ThreadPoolExecutor(max_workers=min(8, len(subtasks) + 1)) as ex:
-        futs = {ex.submit(do, i, st): i for i, st in enumerate(subtasks)}
-        for f in futs:
-            i = futs[f]
-            try:
-                w, ans = f.result()
-            except Exception as e:
-                print(f"-- subtask {i} failed: {e}")
-                failed.append(subtasks[i].get("title", f"subtask-{i}"))
-                continue
-            results[i] = (w, ans)
-            print(f"-- [{w}] {subtasks[i].get('title','subtask')}: {ans[:200]}...")
-    if not any(results):
-        raise RuntimeError("all subtask workers failed")
 
     draft = "\n\n".join(
         f"### {subtasks[i].get('title','subtask')}\n({w})\n{ans}"
-        for i, (w, ans) in enumerate(results) if w
+        for i, w, ans in results if i is not None
     )
     print(f"== critique ({critic}) ==")
     try:
@@ -141,11 +219,11 @@ def run_swarm(fleet, bb, problem, member_names, roles, history=None, stream_cb=N
         final = draft
     bb.put("final", synth, problem, final)
     member_status = {
-        "participated": [planner, critic, synth] + [w for w, _ in results if w],
+        "participated": [planner, critic, synth] + [w for _, w, _ in results if w],
         "failed": failed,
     }
     member_details = {}
-    for i, (w, ans) in enumerate(results):
+    for i, w, ans in results:
         if w:
             member_details[w] = ans
     return final, member_status, member_details

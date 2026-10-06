@@ -16,6 +16,13 @@ host = "0.0.0.0"
 port = 5100
 mode = "ensemble"          # ensemble = all enabled members answer, judge merges
 reasoning = "off"          # default reasoning control: off | auto | on
+# spread_roles = true      # swarm mode: assign planner/critic/synth to distinct members
+                           # (default false = each role takes the first matching member)
+# Pin exact members to swarm roles (swarm mode); unset = auto (role pool +
+# rotation/spread). A pinned role skips rotation.
+# swarm_planner = "Qwen3.8-flash-Next-uncensored"
+# swarm_critic = "Qwen3.8-Dominatrix"
+# swarm_synth = "Hemmingway-1-Heretic-MTP-V3-Final"
 member_timeout = 0.0       # per-member timeout for serve-mode fan-out (0 = off)
 judge = "Hemmingway_Qwen-27B"
 

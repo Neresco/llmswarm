@@ -342,6 +342,48 @@ while still letting you share a link for the swarm's OpenAI-compatible API:
 - Verified: LAN client gets 200 on `/v1/models` + `/health` but 403 on `/ui`,
   `/`, `/api/config`, `POST /api/save` and `POST /v1/completions`.
 
+## Swarm Serve: Role Spreading, Pins, and Planner Resilience (2026-07-21)
+
+Swarm serve mode previously concentrated on one or two members: the
+planner/critic/synth roles always resolved to the first role-matching
+member, and a planner that refused or wrote prose instead of JSON silently
+collapsed the whole run to a single trivial worker.
+
+### Changes
+
+- **Single-subtask fan-out**: when the plan yields one subtask, it is sent
+  to *every* worker in parallel (independent answers merged in the draft)
+  instead of one worker.
+- **Planner retry**: failed or empty planner calls fall through to the next
+  member (max 3 attempts) before the direct-answer fallback.
+- **Prose-as-draft**: if a planner writes the answer instead of a plan
+  (common for roleplay traffic), the prose is used as the draft and the
+  worker phase is skipped — critique + synthesize still refine it. Saves a
+  full discarded generation per request.
+- **`spread_roles = true`** (serve config): planner/critic/synth are
+  assigned to distinct members when possible.
+- **Per-request role rotation**: auto-assigned roles rotate across the
+  eligible pool per request instead of always taking the first match.
+- **Role pins**: `swarm_planner` / `swarm_critic` / `swarm_synth` in
+  `[serve]` (web UI selects, "auto" default) pin exact members and skip
+  rotation for that role.
+- **System prompt merge**: a member's own system prompt is merged into the
+  existing first system message instead of prepended as a second one —
+  Qwen3-style chat templates reject a second system message with
+  "System message must be at the beginning" (HTTP 500 on every call).
+- `parse_subtasks` accepts a top-level JSON list; `try_parse_subtasks`
+  returns `None` for unusable output.
+
+### Files
+
+- `llmswarm/swarm.py` - `run_swarm` role assignment (pins/spread/rotation),
+  planner retry loop, prose-as-draft, single-subtask fan-out
+- `llmswarm/client.py` - `with_member_system()` merge helper (3 call sites)
+- `llmswarm/server.py` - passes `spread_roles` + role pins to `run_swarm`
+- `llmswarm/config.py` - validation + serialization of the new serve keys
+- `llmswarm/ui.py` - spread_roles checkbox + three role-pin selects
+- `example.llswarm.toml`, `README.md` - documentation
+
 ## Summary
 
 | Priority | Total | Done | Remaining |

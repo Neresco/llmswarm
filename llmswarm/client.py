@@ -247,10 +247,7 @@ def chat(fleet, name, messages, temperature=0.7, max_tokens=2048, timeout=6000, 
         return _horde_call(fleet, name, m, _messages_to_prompt(messages),
                            max_tokens, temperature, None, timeout)
     member = fleet.members[name]
-    # Prepend the member's system prompt when it is enabled and non-empty.
-    # A copy is made so the caller's list is not mutated.
-    if member.system_prompt_enabled and member.system_prompt:
-        messages = [{"role": "system", "content": member.system_prompt}] + list(messages)
+    messages = with_member_system(member, messages)
     body = {
         "messages": messages,
         "temperature": member.temperature if member.temperature is not None else temperature,
@@ -340,9 +337,7 @@ def chat_stream(fleet, name, messages, on_delta=None, temperature=0.7,
         if on_delta and text:
             on_delta(text)
         return text
-    # Prepend the member's system prompt when it is enabled and non-empty (copy to avoid mutating caller).
-    if m.system_prompt_enabled and m.system_prompt:
-        messages = [{"role": "system", "content": m.system_prompt}] + list(messages)
+    messages = with_member_system(m, messages)
     body = {
         "messages": messages,
         "temperature": m.temperature if m.temperature is not None else temperature,
@@ -410,9 +405,7 @@ def chat_with_tools(fleet, name, messages, timeout=6000, params=None):
         text = _horde_call(fleet, name, m, _messages_to_prompt(messages),
                            2048, 0.7, None, timeout)
         return text, []
-    # Prepend the member's system prompt when it is enabled and non-empty (copy to avoid mutating caller).
-    if m.system_prompt_enabled and m.system_prompt:
-        messages = [{"role": "system", "content": m.system_prompt}] + list(messages)
+    messages = with_member_system(m, messages)
     body = {
         "messages": messages,
         "temperature": m.temperature if m.temperature is not None else 0.7,
@@ -479,6 +472,22 @@ def chat_with_retry(fleet, name, messages, max_retries=2, base_delay=1.0, **kwar
 
 # ---------------------------------------------------------------------------
 # swarm logic
+
+
+def with_member_system(m, messages):
+    """Apply the member's system prompt to messages (returns a copy).
+
+    If the messages already start with a system message, merge into it:
+    some chat templates (e.g. Qwen3) reject a second system message with
+    'System message must be at the beginning'.
+    """
+    if not (m.system_prompt_enabled and m.system_prompt):
+        return list(messages)
+    if messages and messages[0].get("role") == "system":
+        first = dict(messages[0])
+        first["content"] = m.system_prompt + "\n" + msg_text(first)
+        return [first] + list(messages[1:])
+    return [{"role": "system", "content": m.system_prompt}] + list(messages)
 
 
 def msg_text(m):

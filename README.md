@@ -38,22 +38,42 @@ python3 swarm.py serve   # boots members, then serves OpenAI-compatible API
 
 In SillyTavern: API Connection = **Text Completion** with **Server URL**
 `http://192.168.1.101:5100` (or `/v1` base as your ST version expects),
-Model = `swarm`. Configure `[serve]` in swarm.toml:
+Model = `swarm`. Configure `[serve]` in swarm.toml (or live in the web UI):
 
 ```toml
 [serve]
 host = "0.0.0.0"
 port = 5100
-mode = "ensemble"   # ensemble (default) or swarm
-judge = "bravo"
+mode = "swarm"        # ensemble (default) | swarm | solo | agent
+judge = "bravo"       # merger for ensemble/agent modes
+spread_roles = true   # swarm: planner/critic/synth on distinct members
+# Pin exact members to swarm roles (skips rotation); unset = auto-assign
+# swarm_planner = "Qwen3.8-flash-Next-uncensored"
+# swarm_critic  = "Qwen3.8-Dominatrix"
+# swarm_synth   = "Hemmingway"
 ```
 
 - `ensemble`: every member answers the conversation in parallel; the judge
   merges into one reply. The judge sees the conversation + all candidates.
-- `swarm`: full plan/decompose pipeline on the last user message (slow for
-  chat, good for questions).
+- `swarm`: plan → work → critique → synthesize on the last user message
+  (slower than ensemble, but the whole fleet participates):
+  - The planner decomposes the problem into up to 4 subtasks (JSON).
+    If it writes prose instead (typical for roleplay traffic), the prose is
+    used directly as the draft and the worker phase is skipped.
+    Failed or empty planner calls fall through to the next member (max 3
+    attempts) before a direct-answer fallback.
+  - A single subtask fans out to **all** workers, so even a trivial plan
+    gets independent answers from the whole fleet.
+  - Roles: planner/critic/synth are auto-assigned from the role pool and
+    **rotate per request**; `spread_roles = true` puts them on distinct
+    members. Pin any role with `swarm_planner`/`swarm_critic`/`swarm_synth`
+    to keep it fixed.
 - Members answer with the full ST history (ST is still the memory); the
   blackboard records candidates as `chat` entries.
+
+Note: a member's own system prompt (web UI per-member setting) is merged
+into the first system message of each call, not prepended as a second one —
+chat templates like Qwen3 reject a second system message.
 
 ## Horde worker mode
 
@@ -108,10 +128,12 @@ length, and kudos earned.
 - `solo --member NAME` - one model answers, baseline.
 - `ensemble` - every member answers the same problem in parallel; a judge
   (`--judge`, default last member) merges and flags disagreements.
-- `swarm` - planner decomposes the problem (max 4 subtasks), workers solve
-  subtasks in parallel, a critic reviews the draft, a synthesizer writes the
-  final answer. Workers never see each other's raw context, only blackboard
-  findings.
+- `swarm` - planner decomposes the problem (max 4 subtasks, JSON), workers
+  solve subtasks in parallel (a single subtask fans out to all workers), a
+  critic reviews the draft, a synthesizer writes the final answer. If the
+  planner returns prose instead of a plan, the prose becomes the draft and
+  the worker phase is skipped. Workers never see each other's raw context,
+  only blackboard findings.
 
 ## Blackboard (shared knowledge storage)
 
@@ -183,7 +205,10 @@ If `url` is set instead of launching, the member is treated as external
 (already-running server at that base URL).
 
 Roles: `planner`, `worker`, `critic`, `synth`, or `any`. Override per run
-with `--roles '{"planner":"alpha","critic":"charlie"}'`.
+with `--roles '{"planner":"alpha","critic":"charlie"}'`. In serve `swarm`
+mode, unpinned planner/critic/synth roles are auto-assigned from the pool
+and rotate per request (see the serve section); pin them with
+`swarm_planner`/`swarm_critic`/`swarm_synth`.
 
 ### Connect-only members (typical for horde)
 

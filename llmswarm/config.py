@@ -94,6 +94,10 @@ def validate_config(cfg):
     judge = serve.get("judge")
     if judge and judge not in seen_names:
         issues.append(f"ERROR: Judge '{judge}' not found in members")
+    for k in ("swarm_planner", "swarm_critic", "swarm_synth"):
+        v = serve.get(k)
+        if v and v not in seen_names:
+            issues.append(f"ERROR: Serve {k} '{v}' not found in members")
     
     mode = serve.get("mode", "ensemble")
     if mode not in ("ensemble", "swarm", "solo", "agent"):
@@ -156,6 +160,11 @@ def serialize_toml(cfg, members_rows):
     lines.append("port = %d" % scfg.get("port", 5100))
     lines.append("mode = " + toml_str(scfg.get("mode", "ensemble")))
     lines.append("reasoning = " + toml_str(scfg.get("reasoning", "off")))
+    if scfg.get("spread_roles") is not None:
+        lines.append("spread_roles = " + ("true" if scfg["spread_roles"] else "false"))
+    for k in ("swarm_planner", "swarm_critic", "swarm_synth"):
+        if scfg.get(k):
+            lines.append(k + " = " + toml_str(scfg[k]))
     if scfg.get("member_timeout") is not None:
         lines.append("member_timeout = %s" % float(scfg["member_timeout"]))
     if scfg.get("judge"):
