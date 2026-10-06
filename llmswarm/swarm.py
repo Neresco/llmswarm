@@ -1,6 +1,7 @@
 """Swarm modes: ensemble, swarm (plan/work/critique/synth) and solo."""
 import itertools
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from .client import chat, chat_stream, chat_with_retry, msg_text
@@ -155,6 +156,10 @@ def run_swarm(fleet, bb, problem, member_names, roles, history=None, stream_cb=N
         results = [None] * len(jobs)
         print(f"== work ({len(subtasks)} subtask(s), {len(jobs)} job(s) on {len(workers)} workers) ==")
 
+        # Serialize calls per member: koboldcpp rate-limits concurrent
+        # requests from the same IP (HTTP 503 "sending requests too").
+        member_locks = {w: threading.Lock() for _, _, w in jobs}
+
         def do(i, st, w):
             ctx = bb.recall(st.get("task", problem))
             msgs = [
@@ -163,7 +168,8 @@ def run_swarm(fleet, bb, problem, member_names, roles, history=None, stream_cb=N
                  "\nYour subtask: " + st.get("task", "") +
                  "\nBlackboard:\n" + ("\n".join(ctx) if ctx else "(none)")},
             ]
-            ans = chat_with_retry(fleet, w, msgs)
+            with member_locks[w]:
+                ans = chat_with_retry(fleet, w, msgs)
             bb.put("result", w, problem, ans)
             return w, ans
 

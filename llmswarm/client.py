@@ -1,6 +1,7 @@
 """Chat client: call one member endpoint (retry/stream/tools), health gate,
 reasoning control and per-request logging."""
 import json
+import re
 import socket
 import sys
 import time
@@ -448,6 +449,7 @@ def chat_with_retry(fleet, name, messages, max_retries=2, base_delay=1.0, **kwar
     """
     import socket as _socket
     last_err = None
+    retry_after = 0.0
     for attempt in range(max_retries + 1):
         try:
             return chat(fleet, name, messages, **kwargs)
@@ -464,7 +466,13 @@ def chat_with_retry(fleet, name, messages, max_retries=2, base_delay=1.0, **kwar
                 raise
             last_err = e
         if attempt < max_retries:
-            delay = base_delay * (2 ** attempt)
+            # honour koboldcpp's "try again in N seconds" rate limit (the
+            # 503 body is embedded in the error message by chat())
+            if "HTTP 503" in str(last_err):
+                m = re.search(r"try again in (\d+)", str(last_err))
+                if m:
+                    retry_after = max(retry_after, float(m.group(1)))
+            delay = max(base_delay * (2 ** attempt), retry_after)
             sys.stderr.write(f"[retry] member {name} attempt {attempt+1} failed ({last_err}), retrying in {delay:.1f}s\n")
             time.sleep(delay)
     raise last_err
